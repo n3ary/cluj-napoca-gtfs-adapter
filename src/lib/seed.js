@@ -133,7 +133,7 @@ export async function loadSeed(source, opts = {}) {
     const entry = { stopId: st.stop_id, sequence: parseInt(st.stop_sequence, 10) };
     if (!Number.isFinite(entry.sequence)) continue;
     if (!stopTimes.has(st.trip_id)) stopTimes.set(st.trip_id, []);
-    stopTimes.get(t.trip_id).push(entry);
+    stopTimes.get(st.trip_id).push(entry);
   }
   for (const arr of stopTimes.values()) arr.sort((a, b) => a.sequence - b.sequence);
 
