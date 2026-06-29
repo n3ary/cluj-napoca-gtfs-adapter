@@ -100,23 +100,24 @@ export function reconcileTripsAndStopTimes(input) {
           continue;
         }
 
-        // Validate CSV direction semantics: confirm the CSV's terminal
-        // name (in_stop_name for dir=1, out_stop_name for dir=0) matches
-        // the resolved pattern's last stop. If not, the CSV is using a
-        // different direction convention than we assume, OR the seed is
-        // stale on this route's terminals, OR CTP renamed a stop. Either
-        // way, trip times may be assigned to the wrong direction. Warn
-        // loudly so this surfaces in CI logs and the headsign fallback
-        // skips the (now-untrusted) CSV terminal name.
+        // Validate CSV terminal-name label against the resolved pattern's
+        // last stop. This is purely a NAMING consistency check — the
+        // trip direction itself is determined by the CSV column index
+        // (col 0 = dir 0, col 1 = dir 1), which never changes based on
+        // this label. A mismatch here means CTP's CSV uses a shorter /
+        // different spelling than the catalog (e.g. "P-ta Garii" vs
+        // "P-ța Gării Nord") — same physical stop, different label.
+        // We don't trust the CSV's terminal name as a headsign
+        // fallback in that case, but the trip times stay with their
+        // column-index-assigned direction.
         const expectedTerminalName = orderedStops[orderedStops.length - 1]?.name ?? null;
         const csvTerminalName = dir === 0 ? csv.outStopName : csv.inStopName;
         const csvTerminalTrustable = terminalNamesMatch(expectedTerminalName, csvTerminalName);
         if (!csvTerminalTrustable) {
           localWarnings.push(
-            `CSV direction validation: ${routeShortName} dir=${dir} terminal mismatch — ` +
+            `CSV terminal label mismatch: ${routeShortName} dir=${dir} — ` +
             `pattern last stop is "${expectedTerminalName}", CSV header says "${csvTerminalName}". ` +
-            `Trip times may be assigned to the wrong direction. ` +
-            `Skipping CSV terminal name as headsign fallback for this route.`,
+            `Skipping CSV terminal name as headsign fallback (likely a naming variant, not a direction issue).`,
           );
         }
 
@@ -254,8 +255,29 @@ function hhmmToSeconds(hhmm) {
  */
 function terminalNamesMatch(a, b) {
   if (!a || !b) return true;
-  const norm = (s) => s.toString().toLowerCase().replace(/[^a-z0-9ăâîșț]/g, '');
-  return norm(a) === norm(b);
+  // Normalize: lowercase + strip diacritics + keep only word characters.
+  // Handles the common CTP catalog mismatch where the CSV uses a
+  // shorter form ("P-ta Garii") and the catalog has the full form
+  // ("P-ța Gării Nord") — same physical stop, different precision.
+  const norm = (s) => s.toString().toLowerCase()
+    .replace(/ă/g, 'a').replace(/â/g, 'a').replace(/î/g, 'i')
+    .replace(/ș/g, 's').replace(/ț/g, 't')
+    .replace(/[^a-z0-9]/g, '');
+  const na = norm(a);
+  const nb = norm(b);
+  if (!na || !nb) return true; // empty after norm — treat as trustable
+  if (na === nb) return true;
+  // One contains the other (e.g. "ptagarii" ⊂ "ptagariinord").
+  if (na.includes(nb) || nb.includes(na)) return true;
+  // Share at least one significant token (≥ 4 chars). Catches
+  // abbreviations like "Taberei" / "Statia Taberei" or
+  // "Cluj-Napoca" / "Cluj Napoca".
+  const tokensA = new Set(na.match(/.{4,}/g) ?? []);
+  const tokensB = nb.match(/.{4,}/g) ?? [];
+  for (const t of tokensB) {
+    if (tokensA.has(t)) return true;
+  }
+  return false;
 }
 
 function formatGtfsTime(seconds) {

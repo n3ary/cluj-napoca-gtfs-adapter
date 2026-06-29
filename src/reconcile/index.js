@@ -23,6 +23,7 @@ import { reconcileFrequencies, frequenciesToTxt } from './frequencies.js';
 import { reconcileCalendar, calendarToTxt } from './calendar.js';
 import { runDataQualityChecks } from './data-quality.js';
 import { tranzyPatternsByRouteDir } from './patterns.js';
+import { reconcileTranzyFallback } from './tranzy-fallback.js';
 
 /**
  * @param {{
@@ -82,8 +83,25 @@ export function reconcile({ seed, tranzy, csv, options = {} }) {
     timing: options.timing,
   });
 
+  // Tranzy /trips fallback — for routes with no CSV coverage at all
+  // (typically the 60 Tranzy-only metropolitan lines that CTP doesn't
+  // publish CSVs for). Emits trip rows with empty times + timepoint=0
+  // so consumers see "this route exists with these trips" instead of
+  // "no service". See `src/reconcile/tranzy-fallback.js` for rationale.
+  const { tripRows: fallbackTripRows, stopTimeRows: fallbackStopTimeRows } =
+    reconcileTranzyFallback({
+      tranzy,
+      routesByRouteId,
+      byRouteService: csv.byRouteService,
+      stopsByStopId,
+      warnings,
+    });
+
   // Calendar: derive from service_ids we actually generated trips for.
-  const serviceIds = new Set(tripRows.map((t) => t.service_id));
+  const serviceIds = new Set([
+    ...tripRows.map((t) => t.service_id),
+    ...fallbackTripRows.map((t) => t.service_id),
+  ]);
   const { rows: calendarRows, unknownServiceIds } = reconcileCalendar({
     serviceIds,
     daysAhead: options.calendarDays ?? 180,
@@ -109,8 +127,8 @@ export function reconcile({ seed, tranzy, csv, options = {} }) {
   });
 
   const agencyTxt = ensureAgencyTimezone(seed.agencyTxt, options.timezone ?? 'Europe/Bucharest');
-  const allTripRows = [...tripRows, ...freqTripRows];
-  const allStopTimeRows = [...stopTimeRows, ...freqStopTimeRows];
+  const allTripRows = [...tripRows, ...freqTripRows, ...fallbackTripRows];
+  const allStopTimeRows = [...stopTimeRows, ...freqStopTimeRows, ...fallbackStopTimeRows];
   const files = {
     'agency.txt': agencyTxt,
     'routes.txt': routesToTxt(routes),
