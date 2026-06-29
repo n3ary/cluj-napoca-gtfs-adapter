@@ -83,7 +83,7 @@ investigation). These break down as:
 | Night routes (*N) | M26N, M41N, 4N | May use different naming. We currently miss them entirely. |
 | Emerson shuttle (88*) | 88A–88L | Event/shift routes — depends on event calendar we don't have. |
 | Special/seasonal | 30U (Untold festival), CS (CURSA SPECIALĂ), D51 | Festival-only; expected zero trips outside the event window. |
-| Suspended | M35, 2, M12L, M34B, 40S, 87B, 8D, 8S, 39S, 52B, 101A | CSV says "Nu circula" / "In lucru". Zero trips is correct. (`39 CREIC` is no longer in this list — see [`TRANZY_TO_CTP_SHORTNAME`](../src/sources/ctp-csv/shortname-aliases.js).) |
+| Suspended | M35, 2, M12L, M34B, 40S, 87B, 8D, 8S, 39S, 52B, 101A | CSV says "Nu circula" / "In lucru". Zero trips is correct. (`39 CREIC` is no longer in this list — see [`canonicalShortName`](../src/sources/ctp-csv/shortname-aliases.js).) |
 | Active but no CSV | (none confirmed at the moment) | If the seed also has no pattern for these, we silently emit zero trips. |
 
 For routes without CSV but with **seed pattern** (`routes.txt` has the

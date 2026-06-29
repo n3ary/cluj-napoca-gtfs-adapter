@@ -15,6 +15,7 @@
 
 import { computeStopTimes } from '../../lib/timing.js';
 import { info, warnMsg } from '../../lib/log-severity.js';
+import { canonicalShortName } from '../../sources/ctp-csv/shortname-aliases.js';
 
 const DEFAULT_TIMING = {
   speedKmh: { peak: 14, offpeak: 22, night: 28 },
@@ -571,8 +572,13 @@ export function reconcileTripsAndStopTimes(input) {
 }
 
 function findRouteByShortName(routesByRouteId, shortName) {
+  // shortName is already canonical (URL form). Routes in the map carry
+  // catalog-side names, so canonicalize each row's route_short_name for
+  // the compare — that way `39 CREIC` (Trans) and `39C` (Tranzy) both
+  // resolve to the same row that matches `39CREIC`.
+  const target = canonicalShortName(shortName);
   for (const r of routesByRouteId.values()) {
-    if (r.route_short_name === shortName) return r;
+    if (canonicalShortName(r.route_short_name) === target) return r;
   }
   return null;
 }

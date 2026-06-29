@@ -16,6 +16,7 @@ export {
   fetchAllCsvSchedules,
   buildCtpCsvUrl,
   normalizeShortNameForCtpUrl,
+  canonicalShortName,
   CSV_BASE_URL,
   CSV_SERVICE_KEYS,
   CSV_SERVICE_ID_MAP,
@@ -25,4 +26,3 @@ export {
   parseCtpCsv,
   classifyCell,
 } from './client.js';
-export { TRANZY_TO_CTP_SHORTNAME as _TRANZY_TO_CTP_SHORTNAME_MAP } from './shortname-aliases.js';

@@ -31,6 +31,7 @@
 
 import { mkdirSync, existsSync, readFileSync, writeFileSync, readdirSync, renameSync } from 'node:fs';
 import { join, dirname } from 'node:path';
+import { canonicalShortName } from '../sources/ctp-csv/shortname-aliases.js';
 
 /** Root of the build-input layout. */
 export const BUILD_INPUT_DIR = '.build-input';
@@ -52,6 +53,11 @@ export function ensureBuildInputDirs() {
  * existing file for the same (route, svc) pair. Caller is
  * responsible for only calling this on 200-ok responses.
  *
+ * The shortName is canonicalized before being used in the filename,
+ * so Tranzy's `39C` and Transitous's `39 CREIC` both write to
+ * `csv/39CREIC_<svc>.csv`. This is the single point where the
+ * catalog→CTP name mapping is applied for disk IO.
+ *
  * @param {string} routeShortName
  * @param {string} svcKey
  * @param {string} body
@@ -63,12 +69,17 @@ export function writeCsvBody(routeShortName, svcKey, body) {
 }
 
 /**
+ * Resolve the on-disk path for a (route_short_name, svcKey) CSV.
+ * Always returns the canonical CTP-side filename, regardless of
+ * whether the caller passed a Tranzy-side (`39C`) or Transitous-side
+ * (`39 CREIC`) name.
+ *
  * @param {string} routeShortName
  * @param {string} svcKey
  * @returns {string}
  */
 export function csvPath(routeShortName, svcKey) {
-  return join(CSV_DIR, `${routeShortName}_${svcKey}.csv`);
+  return join(CSV_DIR, `${canonicalShortName(routeShortName)}_${svcKey}.csv`);
 }
 
 /**

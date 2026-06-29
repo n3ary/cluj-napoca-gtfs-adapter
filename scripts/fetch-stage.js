@@ -42,6 +42,7 @@ import { argv, env, exit } from 'node:process';
 import { loadTransitousSeed } from '../src/sources/transitous/index.js';
 import { TranzyClient } from '../src/sources/tranzy/index.js';
 import { parseCtpCsv, buildCtpCsvUrl, CSV_SERVICE_KEYS } from '../src/sources/ctp-csv/index.js';
+import { canonicalShortName } from '../src/sources/ctp-csv/shortname-aliases.js';
 import { USER_AGENT } from '../src/lib/seed.js';
 import { ensureBuildInputDirs, writeCsvBody, writeStatusManifest } from '../src/lib/build-input.js';
 
@@ -101,25 +102,32 @@ async function main() {
   }
 
   // Build merged route list. Each entry is { shortName, sources } where
-  // sources tracks which upstream(s) carry this route. Build phase uses
-  // Tranzy as authoritative for content; Transitous for id stability.
+  // shortName is the canonical CTP-side name (post-alias, post-normalize)
+  // and sources tracks which upstream(s) carry this route.
+  //
+  // We canonicalize at this step so Tranzy's `39C` and Transitous's
+  // `39 CREIC` collapse into one entry → one CSV fetch → one file on
+  // disk (`csv/39CREIC_lv.csv`). Without canonicalization we'd fetch
+  // the same URL twice and write two files with identical content.
   /** @type {Map<string, {shortName: string, sources: string[]}>} */
   const routeMap = new Map();
   for (const r of tranzyData.routes) {
     if (!r.route_short_name) continue;
-    if (!routeMap.has(r.route_short_name)) {
-      routeMap.set(r.route_short_name, { shortName: r.route_short_name, sources: [] });
+    const canon = canonicalShortName(r.route_short_name);
+    if (!routeMap.has(canon)) {
+      routeMap.set(canon, { shortName: canon, sources: [] });
     }
-    routeMap.get(r.route_short_name).sources.push('tranzy');
+    routeMap.get(canon).sources.push('tranzy');
   }
   for (const r of seed.routes) {
     if (!r.shortName) continue;
-    if (!routeMap.has(r.shortName)) {
+    const canon = canonicalShortName(r.shortName);
+    if (!routeMap.has(canon)) {
       // Transitous-only route — Tranzy hasn't imported it. Still include
       // so we try the CSV (CTP may publish it under this short_name).
-      routeMap.set(r.shortName, { shortName: r.shortName, sources: [] });
+      routeMap.set(canon, { shortName: canon, sources: [] });
     }
-    routeMap.get(r.shortName).sources.push('transitous');
+    routeMap.get(canon).sources.push('transitous');
   }
   const routes = [...routeMap.values()];
   console.log(`${TAG} merged route list: ${routes.length} (${tranzyData.routes.length} tranzy + ${routes.filter((r) => !r.sources.includes('tranzy')).length} transitous-only)`);

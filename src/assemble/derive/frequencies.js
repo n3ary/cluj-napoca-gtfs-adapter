@@ -23,6 +23,7 @@
 
 import { computeStopTimes } from '../../lib/timing.js';
 import { info, warnMsg } from '../../lib/log-severity.js';
+import { canonicalShortName } from '../../sources/ctp-csv/shortname-aliases.js';
 
 const DEFAULT_WINDOW = { start: '05:00', end: '23:00' };
 const DEFAULT_HEADWAY_SEC = 900; // 15 min — urban bus default
@@ -228,8 +229,12 @@ function formatTime(seconds) {
 }
 
 function findRouteByShortName(routesByRouteId, shortName) {
+  // shortName is canonical (URL form); routes carry catalog-side names.
+  // See the matching helper in src/assemble/emit/trips.js for the
+  // rationale — single compare rule keeps CSV-IO keys in agreement.
+  const target = canonicalShortName(shortName);
   for (const r of routesByRouteId.values()) {
-    if (r.route_short_name === shortName) return r;
+    if (canonicalShortName(r.route_short_name) === target) return r;
   }
   return null;
 }

@@ -15,11 +15,11 @@
 import { USER_AGENT } from '../../lib/seed.js';
 import { warnMsg } from '../../lib/log-severity.js';
 import { readCsvBody, readStatusManifest } from '../../lib/build-input.js';
-import { TRANZY_TO_CTP_SHORTNAME } from './shortname-aliases.js';
+import { TRANZY_TO_CTP_SHORTNAME, canonicalShortName } from './shortname-aliases.js';
 import { parseCtpCsv } from './parser.js';
 
 export { parseCtpCsv, classifyCell } from './parser.js';
-export { TRANZY_TO_CTP_SHORTNAME } from './shortname-aliases.js';
+export { TRANZY_TO_CTP_SHORTNAME, canonicalShortName } from './shortname-aliases.js';
 
 const DEFAULT_BASE_URL = 'https://ctpcj.ro/orare/csv/orar_{routeShortName}_{serviceId}.csv';
 
@@ -34,11 +34,10 @@ const DEFAULT_BASE_URL = 'https://ctpcj.ro/orare/csv/orar_{routeShortName}_{serv
  *     endpoints: the no-space form returns the actual route_long_name
  *     header, the URL-encoded form returns 404.
  *
- * Note: the `39 CREIC` case is now ALSO handled by the
- * {@link TRANZY_TO_CTP_SHORTNAME} alias map (`39C` → `39CREIC`),
- * which catches the Tranzy-side shortening before this helper runs.
- * This helper covers the whitespace case from Transitous's seed
- * (where `39 CREIC` would otherwise need normalization).
+ * Exposed as a separate helper for completeness, but most callers
+ * should reach for {@link canonicalShortName} instead — it composes
+ * this helper with the {@link TRANZY_TO_CTP_SHORTNAME} alias map
+ * so both rules apply in one call.
  *
  * @param {string} routeShortName
  * @returns {string}
@@ -53,11 +52,11 @@ export function normalizeShortNameForCtpUrl(routeShortName) {
  * inspect-404s diagnostic both use this so URL-convention changes
  * only need to land in one place.
  *
- * Calls {@link normalizeShortNameForCtpUrl} to strip whitespace before
- * building the URL (see that helper for why CTP requires this), and
- * applies the {@link TRANZY_TO_CTP_SHORTNAME} alias map for routes
- * where Tranzy shortens the name in a way that doesn't match CTP's
- * URL (e.g. `39C` → `39CREIC`).
+ * Calls {@link canonicalShortName} for the catalog→CTP alias map
+ * (e.g. `39C` → `39CREIC`) and whitespace normalization. That helper
+ * is the single place those rules live; everything else that touches
+ * a CSV-IO identifier (csvPath, byRouteService key, route lookup)
+ * funnels through it too.
  *
  * @param {string} routeShortName
  * @param {string} serviceKey  'lv' | 's' | 'd' (or 'ld')
@@ -65,10 +64,10 @@ export function normalizeShortNameForCtpUrl(routeShortName) {
  * @returns {string}
  */
 export function buildCtpCsvUrl(routeShortName, serviceKey, baseUrl = DEFAULT_BASE_URL) {
-  // Apply explicit Tranzy→CTP aliases first (handles shortening that
-  // can't be derived from the name itself), then normalize whitespace.
-  const aliased = TRANZY_TO_CTP_SHORTNAME[routeShortName] ?? routeShortName;
-  const urlShortName = normalizeShortNameForCtpUrl(aliased);
+  // canonicalShortName applies the Tranzy→CTP alias map and strips
+  // whitespace — same rules every other CSV-IO path uses. Keeping it
+  // here means the URL convention lives in exactly one place.
+  const urlShortName = canonicalShortName(routeShortName);
   return baseUrl
     .replace('{routeShortName}', encodeURIComponent(urlShortName))
     .replace('{serviceId}', encodeURIComponent(serviceKey));
@@ -251,7 +250,11 @@ export async function fetchAllCsvSchedules(routes, opts = {}) {
 
   for (const route of routes) {
     for (const svcKey of serviceKeys) {
-      const shortName = route.shortName;
+      // Canonicalize the shortName here so the byRouteService map key,
+      // the CSV-IO call, and the warning text all agree on one name.
+      // Callers can pass either catalog-side name (`39C` from Tranzy,
+      // `39 CREIC` from Transitous) — both resolve to `39CREIC`.
+      const shortName = canonicalShortName(route.shortName);
       const serviceId = serviceIdMap[svcKey] ?? svcKey.toUpperCase();
       // Wrap in a function so the load only starts when the worker dequeues
       // it — otherwise all tasks would kick off concurrently before the

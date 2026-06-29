@@ -40,8 +40,9 @@ in two distinct situations:
 2. **Whole-line gap** — the route is listed on CTP's website but
    has zero CSVs published for any service day (no recent example —
    the historical `39 CREIC` case is fixed via the
-   [`TRANZY_TO_CTP_SHORTNAME`](../src/sources/ctp-csv/shortname-aliases.js)
-   alias map).
+   [`canonicalShortName`](../src/sources/ctp-csv/shortname-aliases.js)
+   helper, which collapses Tranzy's `39C` and Transitous's `39 CREIC`
+   to the same canonical `39CREIC` for the CSV URL).
    This **IS a build failure** — the operator hasn't published any
    authoritative schedule data, and the Tranzy fallback (see below)
    is the only data we have.
@@ -58,8 +59,8 @@ route's 404s against its own successful CSV fetches:
 
 Current state (2026-06-29): 18 expected 404s (weekday-only routes
 missing weekend CSV), 0 whole-line gaps (the historical `39 CREIC`
-case is fixed via the [`TRANZY_TO_CTP_SHORTNAME`](../src/sources/ctp-csv/shortname-aliases.js)
-alias map: `39C` → `39CREIC`).
+case is fixed via [`canonicalShortName`](../src/sources/ctp-csv/shortname-aliases.js):
+`39C` → `39CREIC`).
 
 ---
 
@@ -204,9 +205,11 @@ the adapter pulls trips directly from Tranzy's `/trips` and
 Historical note: `39 CREIC` used to be a whole-line gap until we
 discovered Tranzy publishes its `route_short_name` as the truncated
 `39C` while CTP publishes the CSV at `orar_39CREIC_lv.csv`. The
-[`TRANZY_TO_CTP_SHORTNAME`](../src/sources/ctp-csv/shortname-aliases.js)
-alias map handles this — `39C` → `39CREIC` — without going through
-Transitous.
+[`canonicalShortName`](../src/sources/ctp-csv/shortname-aliases.js)
+helper handles this — `39C` → `39CREIC` (and the Transitous-side
+`39 CREIC` collapses to the same canonical name). Every CSV-IO path
+funnels through this one function so the URL, on-disk filename,
+manifest entry, and route lookup all use `39CREIC`.
 
 Constraints:
 

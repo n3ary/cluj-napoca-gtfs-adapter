@@ -25,6 +25,7 @@
 
 import { parseCsv } from '../../lib/csv.js';
 import { info } from '../../lib/log-severity.js';
+import { canonicalShortName } from '../../sources/ctp-csv/shortname-aliases.js';
 
 /**
  * @param {{
@@ -41,15 +42,21 @@ export function reconcileRoutes({ seed, tranzy, warnings }) {
   /** @type {Map<string, any>} */
   const byRouteId = new Map();
   /** @type {Map<string, any>} */
-  const tranzyByShortName = new Map();
+  // Keyed by canonical CTP-side name (post-alias, post-normalize) so
+  // Tranzy's `39C` and Transitous's `39 CREIC` map to the same row.
+  // The raw catalog-side names are still preserved on each row's
+  // `route_short_name` field for downstream `routes.txt` output.
+  const tranzyByCanonical = new Map();
   /** @type {Map<string, any>} */
-  const seedByShortName = new Map();
+  const seedByCanonical = new Map();
   const routes = [];
 
   // ── Step 1: Tranzy is the base catalog. Every Tranzy route becomes
-  // a row keyed by its Tranzy route_id. We track them by short_name so
-  // the Transitous pass can look up the matching row for ID-stability
-  // upgrades.
+  // a row keyed by its Tranzy route_id. We track them by canonical
+  // short_name so the Transitous pass can look up the matching row
+  // for ID-stability upgrades (using canonical names means the lookup
+  // works even when Tranzy and Transitous spell the same route
+  // differently — e.g. `39C` vs `39 CREIC`).
   let tranzyAdded = 0;
   if (tranzy && Array.isArray(tranzy.routes)) {
     for (const r of tranzy.routes) {
@@ -57,6 +64,7 @@ export function reconcileRoutes({ seed, tranzy, warnings }) {
       if (!id) continue;
       if (byRouteId.has(id)) continue;
       const shortName = (r.route_short_name ?? '').toString().trim();
+      const canonical = canonicalShortName(shortName);
       const color = (r.route_color ?? '').toString().replace(/^#?/, '').toUpperCase();
       const row = {
         route_id: id,
@@ -70,25 +78,27 @@ export function reconcileRoutes({ seed, tranzy, warnings }) {
       };
       byRouteId.set(id, row);
       routes.push(row);
-      if (shortName) tranzyByShortName.set(shortName, row);
+      if (canonical) tranzyByCanonical.set(canonical, row);
       tranzyAdded++;
     }
   }
 
   // ── Step 2: Transitous is the ID-stability overlay. For each
   // Transitous route, if we already added the matching Tranzy row by
-  // short_name, swap the published route_id to Transitous's value so
-  // downstream apps (neary catalog, etc.) keep their references. Also
-  // fill in any fields Tranzy left empty (route_type, etc.).
+  // canonical short_name, swap the published route_id to Transitous's
+  // value so downstream apps (neary catalog, etc.) keep their
+  // references. Also fill in any fields Tranzy left empty
+  // (route_type, etc.).
   let tranzyUpgradedToTransitousId = 0;
   let transitousOnlyAdded = 0;
   for (const r of seed.routes) {
     if (!r.routeId) continue;
     const shortName = (r.shortName ?? '').toString().trim();
-    if (shortName && tranzyByShortName.has(shortName)) {
+    const canonical = canonicalShortName(shortName);
+    if (shortName && tranzyByCanonical.has(canonical)) {
       // Shared route — upgrade the existing Tranzy row's route_id to
       // Transitous's, and patch any missing fields from the seed.
-      const tranzyRow = tranzyByShortName.get(shortName);
+      const tranzyRow = tranzyByCanonical.get(canonical);
       const oldId = tranzyRow.route_id;
       const newId = String(r.routeId);
       if (oldId !== newId) {
@@ -103,8 +113,8 @@ export function reconcileRoutes({ seed, tranzy, warnings }) {
       }
       if (!tranzyRow.route_long_name && r.longName) tranzyRow.route_long_name = r.longName;
       // Remember the match so a Transitous-only fallback (no Tranzy)
-      // wouldn't double-add this short_name.
-      seedByShortName.set(shortName, tranzyRow);
+      // wouldn't double-add this canonical name.
+      seedByCanonical.set(canonical, tranzyRow);
       continue;
     }
     // Transitous-only route (Tranzy doesn't have it).
@@ -121,7 +131,7 @@ export function reconcileRoutes({ seed, tranzy, warnings }) {
     };
     byRouteId.set(row.route_id, row);
     routes.push(row);
-    if (shortName) seedByShortName.set(shortName, row);
+    if (canonical) seedByCanonical.set(canonical, row);
     transitousOnlyAdded++;
   }
 

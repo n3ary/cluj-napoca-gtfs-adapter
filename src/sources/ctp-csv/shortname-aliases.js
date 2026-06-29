@@ -16,9 +16,38 @@
  *
  * @type {Record<string, string>}
  */
-export const TRANZY_TO_CTP_SHORTNAME = {
+export const TRANZY_TO_CTP_SHORTNAME = Object.freeze({
   // Tranzy: "39C" → CTP: "39CREIC" (route_id 186).
   // Verified 2026-06-29: `ctpcj.ro/orare/csv/orar_39CREIC_lv.csv` returns
   // a real CSV; `orar_39C_lv.csv` returns 404.
   '39C': '39CREIC',
-};
+});
+
+/**
+ * Resolve any catalog-side route_short_name to its canonical CTP form.
+ *
+ * The canonical form is what CTP uses in its CSV URLs and what every
+ * CSV-IO function should use as its identifier key (file name,
+ * byRouteService map key, manifest entries, route lookup). All four
+ * funnel through here so we only have one place that knows about the
+ * alias map + whitespace rule.
+ *
+ *   - Tranzy publishes `39C`          → canonical `39CREIC`
+ *   - Transitous publishes `39 CREIC` → canonical `39CREIC`
+ *   - Tranzy publishes `22`           → canonical `22`
+ *
+ * The result is also used as the filename inside `.build-input/csv/`,
+ * so e.g. `csv/39CREIC_lv.csv` is the only file written for route 186
+ * regardless of which catalog entry the fetch-stage started from.
+ *
+ * Catalog-side names (the values Tranzy and Transitous actually
+ * publish) are still preserved in the `route_short_name` column of
+ * `routes.txt` — this helper only touches CSV-IO identifiers.
+ *
+ * @param {string} shortName
+ * @returns {string}
+ */
+export function canonicalShortName(shortName) {
+  const aliased = TRANZY_TO_CTP_SHORTNAME[shortName] ?? shortName;
+  return aliased.replace(/\s+/g, '');
+}
