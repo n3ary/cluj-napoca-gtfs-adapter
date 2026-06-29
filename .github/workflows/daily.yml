@@ -78,9 +78,18 @@ jobs:
             git clone --depth 1 "$REMOTE" "$DIR"
             cd "$DIR"
             git checkout --orphan binaries
-            git rm -rf . >/dev/null
             cd -
           fi
+
+          cd "$DIR"
+          # The `binaries` branch is the artifact namespace — only this
+          # build's outputs should land on it. Wipe both tracked and
+          # untracked files so leftover paths from previous builds (e.g.
+          # output/cluj-napoca.gtfs.zip from before the root-path change)
+          # don't accumulate forever.
+          git rm -rf . >/dev/null 2>&1 || true
+          git clean -fdx >/dev/null 2>&1 || true
+          cd -
 
           mkdir -p "$DIR"
           cp output/cluj-napoca.gtfs.zip "$DIR/cluj-napoca.gtfs.zip"
