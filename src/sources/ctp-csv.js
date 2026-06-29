@@ -298,11 +298,42 @@ export async function fetchCtpCsv(routeShortName, serviceKey, opts = {}) {
   const body = await res.text();
   // Sanity check: real CSV always starts with "route_long_name,". Anything
   // else (WAF challenge page, captcha HTML, etc.) is a soft failure.
+  // During heavy WAF incidents this can fire for hundreds of fetches
+  // per build — log the first 3 unique body signatures, then dedup.
+  // The full per-category counts end up in the smoke summary.
   if (!body.startsWith('route_long_name,')) {
-    console.warn(`[ctp-csv] ${routeShortName}_${serviceKey}: not CSV (got ${body.length}B starting "${body.slice(0, 40).replace(/\s+/g, ' ')}…")`);
+    wafWarnDedup(routeShortName, serviceKey, body);
     return null;
   }
   return parseCtpCsv(body);
+}
+
+/**
+ * Module-level dedup for WAF warnings. When CTP blocks us with a
+ * challenge page, every fetchCtpCsv call would otherwise spam the
+ * same `<!DOCTYPE html> ...` warning line. We log the first 3 unique
+ * body signatures and emit a single "and N more" line at the end.
+ */
+const _wafSeen = new Set();
+let _wafLogged = 0;
+let _wafTotal = 0;
+function wafWarnDedup(shortName, svcKey, body) {
+  _wafTotal++;
+  const sig = `${body.length}:${body.slice(0, 60).replace(/\s+/g, ' ')}`;
+  if (_wafSeen.has(sig)) {
+    // Already logged this signature — silent (counted in summary).
+    return;
+  }
+  _wafSeen.add(sig);
+  if (_wafLogged < 3) {
+    console.warn(`[ctp-csv] ${shortName}_${svcKey}: not CSV (got ${body.length}B starting "${body.slice(0, 40).replace(/\s+/g, ' ')}…")`);
+    _wafLogged++;
+    if (_wafLogged === 3 && _wafTotal > 3) {
+      console.warn(`[ctp-csv] (further WAF/non-CSV responses suppressed — full breakdown in smoke summary)`);
+    }
+  }
+  // Once we've logged 3 unique sigs + the suppression notice, the
+  // dedup map just keeps counting silently.
 }
 
 /**
