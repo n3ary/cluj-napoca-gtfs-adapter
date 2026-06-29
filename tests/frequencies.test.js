@@ -97,4 +97,33 @@ describe('classifyCell (frequency annotation classification)', () => {
     expect(classifyCell('05:30-')).toEqual({ type: 'unknown' });
     expect(classifyCell('12:00-13:00-14:00')).toEqual({ type: 'unknown' });
   });
+
+  // CTP uses '*' / '**' as per-route annotations whose meaning is
+  // documented on each line's HTML legend page (e.g. M23 = shared
+  // run with M81/M22, M39 = extends past terminus / skips neighborhood).
+  // classifyCell strips the asterisks and preserves them on the
+  // returned object so the parser can log them without counting them
+  // as unrecognized cells. The trip itself is KEPT in the schedule.
+  it('strips leading asterisk and preserves annotation on time cells', async () => {
+    const { classifyCell } = await import('../src/sources/ctp-csv.js');
+    expect(classifyCell('*04:40')).toEqual({ type: 'time', value: '04:40', annotation: '*' });
+  });
+
+  it('strips trailing asterisk and preserves annotation on time cells', async () => {
+    const { classifyCell } = await import('../src/sources/ctp-csv.js');
+    expect(classifyCell('22:50*')).toEqual({ type: 'time', value: '22:50', annotation: '*' });
+  });
+
+  it('strips double trailing asterisk (M39 Cluj-Due-skip marker)', async () => {
+    const { classifyCell } = await import('../src/sources/ctp-csv.js');
+    expect(classifyCell('07:55**')).toEqual({ type: 'time', value: '07:55', annotation: '**' });
+  });
+
+  it('plain times do not get an annotation key', async () => {
+    const { classifyCell } = await import('../src/sources/ctp-csv.js');
+    // toEqual distinguishes present-but-undefined from absent, so this
+    // verifies the existing HH:MM behavior is unchanged.
+    expect(classifyCell('06:30')).toEqual({ type: 'time', value: '06:30' });
+    expect('annotation' in classifyCell('06:30')).toBe(false);
+  });
 });
