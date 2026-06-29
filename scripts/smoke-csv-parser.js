@@ -53,7 +53,9 @@ const WAF_HEADERS = {
 };
 
 async function main() {
-  const failOnMissing = env.SMOKE_FAIL_ON_MISSING === '1';
+  const failOnMissing = env.SMOKE_FAIL_ON_MISSING !== '0';  // default ON
+const failOnInfra = env.SMOKE_ALLOW_INFRA_FAILURES !== '1'; // default ON — any non-404 miss is a signal
+const missingThresholdPct = Number(env.SMOKE_MISSING_THRESHOLD_PCT ?? 10); // % above which the build fails
   const seedUrl = env.TRANSITOUS_SEED_URL || DEFAULT_TRANSITOUS_URL;
   const csvBase = env.CTP_CSV_BASE_URL || DEFAULT_CSV_BASE;
   const fetchImpl = globalThis.fetch;
@@ -221,8 +223,33 @@ async function main() {
   }
 
   const totalMissing = totalNotFound + totalWafBlocked + totalHttpError + totalNetworkError;
-  if (failOnMissing && totalMissing > routes.length * CSV_SERVICE_KEYS.length / 2) {
-    console.error(`[smoke:csv] FAIL: ${totalMissing}/${routes.length * CSV_SERVICE_KEYS.length} CSVs missing (>50% threshold) — looks like a connectivity issue`);
+  const totalInfra = totalWafBlocked + totalHttpError + totalNetworkError;
+
+  // Fail on ANY infrastructure miss (WAF / HTTP / network). 404s are
+  // catalog gaps (operator never published those CSVs) and are OK in
+  // moderation; the others indicate the smoke test couldn't actually
+  // talk to CTP — which means we have NO signal on what the catalog
+  // looks like. Opt-out: SMOKE_ALLOW_INFRA_FAILURES=1.
+  if (failOnInfra && totalInfra > 0) {
+    console.error('');
+    console.error(`[smoke:csv] FAIL: ${totalInfra} CSV fetch(es) hit infrastructure issues — build has no real signal:`);
+    if (totalWafBlocked > 0) console.error(`  - ${totalWafBlocked} WAF-blocked (got 200 OK but body wasn't CSV)`);
+    if (totalHttpError > 0) console.error(`  - ${totalHttpError} HTTP error(s) (non-404 server error)`);
+    if (totalNetworkError > 0) console.error(`  - ${totalNetworkError} network error(s) (timeout / connect refused)`);
+    console.error('  Set SMOKE_ALLOW_INFRA_FAILURES=1 to skip this check (NOT recommended).');
+    exit(2);
+  }
+
+  // Fail on total-miss ratio above threshold. 404s are allowed (catalog
+  // gaps); but if the overall miss rate is high, something upstream
+  // broke and we should investigate. Default threshold 10%.
+  // Opt-out: SMOKE_FAIL_ON_MISSING=0.
+  const threshold = Math.floor((routes.length * CSV_SERVICE_KEYS.length) * missingThresholdPct / 100);
+  if (failOnMissing && totalMissing > threshold) {
+    console.error('');
+    console.error(`[smoke:csv] FAIL: ${totalMissing}/${routes.length * CSV_SERVICE_KEYS.length} CSVs missing (>${missingThresholdPct}% threshold)`);
+    console.error(`  (${totalNotFound} not-found, ${totalInfra} infrastructure issues)`);
+    console.error('  Set SMOKE_FAIL_ON_MISSING=0 to skip this check.');
     exit(2);
   }
 
