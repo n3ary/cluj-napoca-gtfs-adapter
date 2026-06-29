@@ -46,19 +46,52 @@ the IDs downstream apps already key on*.
                   │  GitHub Actions (cron 30 0 * * * UTC)   │
                   └────────────────────┬────────────────────┘
                                        │
-   ┌──────────────┐  ┌────────────┐    │    ┌──────────────────┐
-   │  Transitous  │  │   Tranzy   │    │    │  CTP CSV scrape  │
-   │  seed zip    │  │  /routes   │    │    │  ctpcj.ro/orare/ │
-   │  (no auth)   │  │  /stops    │    │    │  csv/orar_*.csv  │
-   │              │  │  /trips    │    │    │  (WAF headers)   │
-   │              │  │  /shapes   │    │    │                  │
-   │              │  │  /stop_tim │    │    │                  │
-   │              │  │  (X-API-KEY│    │    │                  │
-   │              │  │  + AGENCY) │    │    │                  │
-   └──────┬───────┘  └─────┬──────┘    │    └────────┬─────────┘
-          │                │           │             │
-          │                │           │             │
-          ▼                ▼           ▼             ▼
+            ┌──────────────────────────┴──────────────────────────┐
+            │                                                     │
+            ▼                                                     ▼
+   ┌─────────────────────┐                            ┌──────────────────┐
+   │  Stage 1 — fetch    │                            │  Stage 2 — build │
+   │  scripts/smoke-     │   .build-input/csv/        │  src/cli.js      │
+   │  csv-parser.js      │   .build-input/csv-        │  build           │
+   │                     │   status.json             │                  │
+   │  Authoritative      │   (200-ok CSV bodies +    │  Reads CSVs from │
+   │  route list:        │    manifest of every      │  disk. NEVER     │
+   │   Tranzy union      │    attempt's outcome)     │  fetches.        │
+   │   Transitous seed   │                            │                  │
+   │                     │                            │  Reconciles      │
+   │  Fetches every      │                            │  routes/stops/   │
+   │  (route × service)  │                            │  shapes/trips/   │
+   │  CSV from CTP.      │                            │  calendar →      │
+   │  Writes body on     │                            │  GTFS zip.       │
+   │  200-ok. Fails loud │                            │                  │
+   │  on infra miss.     │                            │                  │
+   └─────────────────────┘                            └──────────────────┘
+```
+
+**Why two phases?** Smoke acts as a gate — if upstream has a
+WAF/HTTP/network failure, CI fails before build runs, so we never
+produce a degraded zip. Single fetch per CSV per CI run (no double-fetch).
+
+**Authoritative route source for smoke**: Tranzy (`/routes` endpoint)
++ Transitous seed (id stability). Tranzy is the source of truth for
+*what CTP operates* (~168 routes vs Transitous's ~108); Transitous adds
+id stability for shared routes so downstream apps (neary) keep their
+keying on Transitous `route_id`. Transitous-only routes still get CSV
+fetches in case CTP publishes them.
+
+```
+   ┌──────────────┐  ┌────────────┐         ┌──────────────────┐
+   │  Transitous  │  │   Tranzy   │         │  CTP CSV scrape  │
+   │  seed zip    │  │  /routes   │         │  ctpcj.ro/orare/ │
+   │  (no auth)   │  │  /stops    │         │  csv/orar_*.csv  │
+   │              │  │  /trips    │         │  (WAF headers)   │
+   │              │  │  /shapes   │         │                  │
+   │              │  │  /stop_tim │         │                  │
+   │              │  │  (X-API-KEY│         │                  │
+   │              │  │  + AGENCY) │         │                  │
+   └──────┬───────┘  └─────┬──────┘         └────────┬─────────┘
+          │                │                         │
+          ▼                ▼                         ▼
        ┌──────────────────────────────────────────────────┐
        │              src/sources/                        │
        │   transitous.js   tranzy.js   ctp-csv.js         │

@@ -78,7 +78,7 @@ export function reconcileTripsAndStopTimes(input) {
     // Find the route row matching this short name (CSV uses short name; rows use route_id).
     const routeRow = findRouteByShortName(input.routesByRouteId, routeShortName);
     if (!routeRow) {
-      localWarnings.push(warnMsg(`CSV for ${routeShortName} but no route in seed/Tranzy; skipping`));
+      localWarnings.push(warnMsg(`CSV for route_short_name "${routeShortName}" but no route in seed/Tranzy; skipping`));
       continue;
     }
     const routeId = routeRow.route_id;
@@ -342,7 +342,7 @@ export function reconcileTripsAndStopTimes(input) {
         const exactCat = exactDir === 0 ? cat0 : cat1;
         const fuzzyCat = fuzzyDir === 0 ? cat0 : cat1;
         summary = info(
-          `CSV origin label partial match for ${routeShortName}: ` +
+          `CSV origin label partial match for route_short_name "${routeShortName}": ` +
           `dir=${exactDir} matches: catalog="${exactCat.name}" (from ${exactCat.source}) == csv="${exactLabel}". ` +
           `dir=${fuzzyDir} mismatches: catalog="${fuzzyCat.name}" (from ${fuzzyCat.source}) vs csv="${fuzzyLabel}". ` +
           `Trusting column convention for the unmatched direction.`,
@@ -351,7 +351,7 @@ export function reconcileTripsAndStopTimes(input) {
         tier = 'fuzzy-both';
         tierMatched = true;
         summary = info(
-          `CSV origin labels fuzzy-matched for ${routeShortName}: ` +
+          `CSV origin labels fuzzy-matched for route_short_name "${routeShortName}": ` +
           `dir=0 catalog="${cat0.name}" (from ${cat0.source}) ≈ csv="${inLabel}"; ` +
           `dir=1 catalog="${cat1.name}" (from ${cat1.source}) ≈ csv="${outLabel}". ` +
           `Catalog and CSV use different precision/spelling for the same stops.`,
@@ -366,7 +366,7 @@ export function reconcileTripsAndStopTimes(input) {
         const fuzzyCat = fuzzyDir === 0 ? cat0 : cat1;
         const noMatchCat = noMatchDir === 0 ? cat0 : cat1;
         summary = info(
-          `CSV origin label mismatch for ${routeShortName}: ` +
+          `CSV origin label mismatch for route_short_name "${routeShortName}": ` +
           `dir=${fuzzyDir} fuzzy-matched: catalog="${fuzzyCat.name}" (from ${fuzzyCat.source}) ≈ csv="${fuzzyLabel}". ` +
           `dir=${noMatchDir} doesn't match: catalog="${noMatchCat.name}" (from ${noMatchCat.source}) vs csv="${noMatchLabel}". ` +
           `Trusting column convention; headsign for the unmatched direction falls back to route_long_name.`,
@@ -390,7 +390,7 @@ export function reconcileTripsAndStopTimes(input) {
           tier = 'swap-exact-both';
           tierMatched = true;
           summary = info(
-            `CSV direction reversed for ${routeShortName}: ` +
+            `CSV direction reversed for route_short_name "${routeShortName}": ` +
             `csv col 0 origin "${inLabel}" matches catalog dir 1 origin "${cat1.name}" (from ${cat1.source}); ` +
             `csv col 1 origin "${outLabel}" matches catalog dir 0 origin "${cat0.name}" (from ${cat0.source}). ` +
             `CSV column-to-direction mapping is flipped relative to the catalog; trips emitted with direction_id swapped.`,
@@ -400,7 +400,7 @@ export function reconcileTripsAndStopTimes(input) {
           tier = 'swap-fuzzy-both';
           tierMatched = true;
           summary = warnMsg(
-            `CSV direction reversed (fuzzy) for ${routeShortName}: ` +
+            `CSV direction reversed (fuzzy) for route_short_name "${routeShortName}": ` +
             `csv col 0 origin "${inLabel}" ≈ catalog dir 1 origin "${cat1.name}" (from ${cat1.source}); ` +
             `csv col 1 origin "${outLabel}" ≈ catalog dir 0 origin "${cat0.name}" (from ${cat0.source}). ` +
             `Names differ in precision/spelling; CSV column-to-direction mapping is flipped relative to the catalog.`,
@@ -415,7 +415,7 @@ export function reconcileTripsAndStopTimes(input) {
           const exactDir = swap0Exact ? 0 : (swap1Exact ? 1 : null);
           const noMatchDir = exactDir === 0 ? 1 : 0;
           summary = warnMsg(
-            `CSV direction reversed (partial) for ${routeShortName}: ` +
+            `CSV direction reversed (partial) for route_short_name "${routeShortName}": ` +
             (exactDir === 0
               ? `csv col 0 origin "${inLabel}" matches catalog dir 1 origin "${cat1.name}" (from ${cat1.source}); `
               : `csv col 1 origin "${outLabel}" matches catalog dir 0 origin "${cat0.name}" (from ${cat0.source}); `) +
@@ -435,7 +435,7 @@ export function reconcileTripsAndStopTimes(input) {
       if (!tierMatched) {
         tier = 'no-match';
         summary = warnMsg(
-          `CSV origin labels DO NOT MATCH catalog for ${routeShortName}: ` +
+          `CSV origin labels DO NOT MATCH catalog for route_short_name "${routeShortName}": ` +
           `dir=0 catalog="${cat0.name}" (from ${cat0.source}) vs csv="${inLabel}"; ` +
           `dir=1 catalog="${cat1.name}" (from ${cat1.source}) vs csv="${outLabel}". ` +
           `Operator may have renamed or removed these terminals; CSV trip times are still used but ` +

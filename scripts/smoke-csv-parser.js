@@ -40,6 +40,7 @@
 import { argv, env, exit } from 'node:process';
 
 import { loadTransitousSeed } from '../src/sources/transitous.js';
+import { TranzyClient } from '../src/sources/tranzy.js';
 import { parseCtpCsv, buildCtpCsvUrl, CSV_SERVICE_KEYS } from '../src/sources/ctp-csv.js';
 import { USER_AGENT } from '../src/lib/seed.js';
 import { ensureBuildInputDirs, writeCsvBody, writeStatusManifest } from '../src/lib/build-input.js';
@@ -70,19 +71,58 @@ async function main() {
   const seedUrl = env.TRANSITOUS_SEED_URL || DEFAULT_TRANSITOUS_URL;
   const csvBase = env.CTP_CSV_BASE_URL || DEFAULT_CSV_BASE;
   const fetchImpl = globalThis.fetch;
+  const apiKey = env.TRANZY_API_KEY;
+  if (!apiKey) {
+    die(2, 'FATAL: TRANZY_API_KEY not set. Smoke needs it to enumerate Tranzy routes (authoritative source).');
+  }
 
   console.log(`${TAG} Transitous seed: ${seedUrl}`);
   console.log(`${TAG} CTP CSV base: ${csvBase}`);
   console.log(`${TAG} service keys: ${CSV_SERVICE_KEYS.join(', ')}`);
 
+  // Build the authoritative route list. Tranzy is the source of truth for
+  // what CTP operates (covers ~880 stops vs Transitous's ~750 and adds
+  // metropolitan routes Transitous hasn't imported). Transitous still
+  // contributes ID stability — for shared route_short_names we keep
+  // both rows in the merged list and let the build phase pick the
+  // canonical one (Tranzy row for content, Transitous id for stability).
   let seed;
   try {
     seed = await loadTransitousSeed({ url: seedUrl });
   } catch (err) {
     die(2, `FATAL: Transitous seed unreachable: ${err.message || err}`);
   }
+  let tranzyData;
+  try {
+    const tz = new TranzyClient({ apiKey, agencyId: env.TRANZY_AGENCY_ID || '2', rateLimitMs: parseInt(env.TRANZY_RATE_LIMIT_MS || '500', 10) });
+    tranzyData = await tz.fetchAll();
+  } catch (err) {
+    die(2, `FATAL: Tranzy API unreachable: ${err.message || err}`);
+  }
 
-  const routes = seed.routes;
+  // Build merged route list. Each entry is { shortName, sources } where
+  // sources tracks which upstream(s) carry this route. Build phase uses
+  // Tranzy as authoritative for content; Transitous for id stability.
+  /** @type {Map<string, {shortName: string, sources: string[]}>} */
+  const routeMap = new Map();
+  for (const r of tranzyData.routes) {
+    if (!r.route_short_name) continue;
+    if (!routeMap.has(r.route_short_name)) {
+      routeMap.set(r.route_short_name, { shortName: r.route_short_name, sources: [] });
+    }
+    routeMap.get(r.route_short_name).sources.push('tranzy');
+  }
+  for (const r of seed.routes) {
+    if (!r.shortName) continue;
+    if (!routeMap.has(r.shortName)) {
+      // Transitous-only route — Tranzy hasn't imported it. Still include
+      // so we try the CSV (CTP may publish it under this short_name).
+      routeMap.set(r.shortName, { shortName: r.shortName, sources: [] });
+    }
+    routeMap.get(r.shortName).sources.push('transitous');
+  }
+  const routes = [...routeMap.values()];
+  console.log(`${TAG} merged route list: ${routes.length} (${tranzyData.routes.length} tranzy + ${routes.filter((r) => !r.sources.includes('tranzy')).length} transitous-only)`);
   console.log(`${TAG} scraping ${routes.length} routes × ${CSV_SERVICE_KEYS.length} service keys = ${routes.length * CSV_SERVICE_KEYS.length} CSVs`);
 
   /** @type {Map<string, {ok: number, missing: number, frequency: number, unknown: number, samples: Array<{route: string, value: string}>}>} */
@@ -206,7 +246,18 @@ async function main() {
   let totalNetworkError = 0;
   let totalFreq = 0;
   const routesWithNoCsv = [];
-  /** @type {Array<{route: string, wholeLine: boolean}>} */
+  /**
+   * Catalog a whole-line 404 by upstream source — this decides whether
+   * the smoke should fail or just warn.
+   *   - Transitous-listed route with no CSV at all → real regression.
+   *     Transitous curates published CTP routes; if the CSV is gone for
+   *     a route they've kept, something changed upstream.
+   *   - Tranzy-only route with no CSV → expected. Tranzy carries
+   *     metropolitan lines (TE1-TE14, M26U, 101A, etc.) that CTP doesn't
+   *     publish CSVs for — they show up via GTFS-RT only. The Tranzy
+   *     fallback in the build handles them with empty times.
+   * @type {Array<{route: string, sources: string[]}>}
+   */
   const notFoundRoutes = [];
   for (const [shortName, s] of stats.entries()) {
     totalOk += s.ok;
@@ -223,17 +274,24 @@ async function main() {
     //     "Sâmbăta: Nu circulă. Duminica: Nu circulă." → 404 is the
     //     right response.
     //   - Route has 0 successful CSVs → every 404 on this route is a
-    //     whole-line gap (real catalog issue). The Tranzy fallback
-    //     catches this in the build, but it's still worth flagging
-    //     because operators expect published CSVs for their lines.
+    //     whole-line gap. Whether that's a regression depends on which
+    //     upstream(s) carry the route — see notFoundRoutes push below.
     const wholeLine = s.ok === 0;
-    if (s.notFound > 0) notFoundRoutes.push({ route: shortName, wholeLine });
+    if (s.notFound > 0) {
+      const sources = routeMap.get(shortName)?.sources ?? [];
+      notFoundRoutes.push({ route: shortName, wholeLine, sources });
+    }
     if (wholeLine && (s.notFound + s.wafBlocked + s.httpError + s.networkError) > 0) {
       routesWithNoCsv.push(shortName);
     }
   }
   const expectedWeekend404s = notFoundRoutes.filter((d) => !d.wholeLine);
+  // Only fail on whole-line 404s for routes that BOTH Transitous and
+  // Tranzy (or just Transitous) carry — Tranzy-only whole-line 404s
+  // are expected catalog gaps handled by the build's fallback.
   const wholeLine404s = notFoundRoutes.filter((d) => d.wholeLine);
+  const wholeLineRegression = wholeLine404s.filter((d) => d.sources.includes('transitous'));
+  const wholeLineTranzyOnly = wholeLine404s.filter((d) => !d.sources.includes('transitous'));
 
   const totalFetches = totalOk + totalNotFound + totalWafBlocked + totalHttpError + totalNetworkError;
 
@@ -258,11 +316,17 @@ async function main() {
         : `${expectedWeekend404s.slice(0, 5).map((d) => d.route).join(', ')}, ... and ${expectedWeekend404s.length - 5} more`;
       console.log(`  Expected (route has weekday CSV — 404 is weekend/no-service):  ${expectedWeekend404s.length} route_short_names [${sample}]`);
     }
-    if (wholeLine404s.length > 0) {
-      const sample = wholeLine404s.length <= 10
-        ? wholeLine404s.map((d) => d.route).join(', ')
-        : `${wholeLine404s.slice(0, 10).map((d) => d.route).join(', ')}, ... and ${wholeLine404s.length - 10} more`;
-      console.log(`  ⚠ WHOLE-LINE gaps (no CSV at all for this route_short_name):     ${wholeLine404s.length} route_short_names [${sample}]`);
+    if (wholeLineRegression.length > 0) {
+      const sample = wholeLineRegression.length <= 10
+        ? wholeLineRegression.map((d) => d.route).join(', ')
+        : `${wholeLineRegression.slice(0, 10).map((d) => d.route).join(', ')}, ... and ${wholeLineRegression.length - 10} more`;
+      console.log(`  ⚠ WHOLE-LINE gaps (Transitous-listed, real regression):     ${wholeLineRegression.length} route_short_names [${sample}]`);
+    }
+    if (wholeLineTranzyOnly.length > 0) {
+      const sample = wholeLineTranzyOnly.length <= 10
+        ? wholeLineTranzyOnly.map((d) => d.route).join(', ')
+        : `${wholeLineTranzyOnly.slice(0, 10).map((d) => d.route).join(', ')}, ... and ${wholeLineTranzyOnly.length - 10} more`;
+      console.log(`  ℹ Tranzy-only gaps (no CSV, expected — fallback handles):  ${wholeLineTranzyOnly.length} route_short_names [${sample}]`);
     }
   }
   console.log('');
@@ -283,20 +347,25 @@ async function main() {
   // run on weekends correctly return 404 from CTP (cross-referenced
   // against the operator's HTML pages — e.g. route 22's page says
   // "Sâmbăta: Nu circulă. Duminica: Nu circulă.").
-  // Opt-out: SMOKE_ALLOW_WHOLE_LINE_404S=1 (only if you intentionally
-  // want to ship without CSV coverage for some routes).
+  // Fail on whole-line 404s for Transitous-listed routes (real regression).
+// Tranzy-only whole-line 404s are expected catalog gaps (metropolitan
+// lines that CTP doesn't publish CSVs for — they show up via GTFS-RT
+// only and are handled by the build's Tranzy /trips fallback).
+// Opt-out: SMOKE_ALLOW_WHOLE_LINE_404S=1 (only if you intentionally
+// want to skip this check for Transitous-listed routes too).
   const allowWholeLine = env.SMOKE_ALLOW_WHOLE_LINE_404S === '1';
-  if (!allowWholeLine && wholeLine404s.length > 0) {
+  if (!allowWholeLine && wholeLineRegression.length > 0) {
     console.error('');
-    ghaError('FAIL — WHOLE-LINE 404(s) — route(s) have ZERO CSV coverage');
-    console.error(`${TAG} ${wholeLine404s.length} WHOLE-LINE 404(s) — route(s) have ZERO CSV coverage:`);
-    for (const d of wholeLine404s.slice(0, 20)) {
+    ghaError('FAIL — WHOLE-LINE 404(s) on Transitous-listed route(s)');
+    console.error(`${TAG} ${wholeLineRegression.length} WHOLE-LINE 404(s) for Transitous-listed routes:`);
+    for (const d of wholeLineRegression.slice(0, 20)) {
       console.error(`  - ${d.route}`);
     }
-    if (wholeLine404s.length > 20) {
-      console.error(`  ... and ${wholeLine404s.length - 20} more`);
+    if (wholeLineRegression.length > 20) {
+      console.error(`  ... and ${wholeLineRegression.length - 20} more`);
     }
-    console.error('  The Tranzy /trips fallback catches these for trip structure, but no authoritative CSV times are published.');
+    console.error('  Transitous curates published CTP routes — if the CSV is gone for a route');
+    console.error('  they still carry, something changed upstream. Investigate.');
     console.error('  Set SMOKE_ALLOW_WHOLE_LINE_404S=1 to skip this check.');
     exit(3);
   }

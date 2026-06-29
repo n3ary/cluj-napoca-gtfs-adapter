@@ -36,19 +36,23 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: CSV parse smoke test (full network)
-        # Phase 1 — fetch. Scrapes every CTP CSV, runs them through the
-        # production parser, fails the build if any cell is unrecognized
-        # (i.e. the #15 fix needs extending) or if any infra failure
-        # occurred. Successful CSV bodies + a status manifest are
-        # written to .build-input/ for the build step to consume.
+      - name: Stage 1 — fetch CTP timetables
+        # Phase 1 — fetch. Authoritative route list is the union of Tranzy
+        # (source of truth for what CTP operates) + Transitous (id
+        # stability). For each route × service key, fetches the CTP CSV,
+        # parses it, and writes the body + a status manifest to
+        # .build-input/ for the build step. Fails loud on any infra miss
+        # (WAF / HTTP 5xx / network) — operator must rerun after upstream
+        # recovers.
         run: npm run smoke:csv
+        env:
+          TRANZY_API_KEY: ${{ secrets.TRANZY_API_KEY }}
+          TRANZY_AGENCY_ID: '2'
 
-      - name: Build feed
-        # Phase 2 — assemble. Reads CSVs from .build-input/csv/ (no
-        # upstream fetch). If .build-input/csv-status.json is missing
-        # (smoke wasn't run or failed), this step fails loud with a
-        # helpful message.
+      - name: Stage 2 — build feed
+        # Phase 2 — assemble. Reads CSVs from .build-input/csv/ (no upstream
+        # fetch). If .build-input/csv-status.json is missing (smoke wasn't
+        # run or failed), this step fails loud with a helpful message.
         run: node src/cli.js build
         env:
           TRANZY_API_KEY: ${{ secrets.TRANZY_API_KEY }}
