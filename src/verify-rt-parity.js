@@ -39,6 +39,12 @@ import { join } from 'node:path';
 
 const DEFAULT_ZIP = join(process.cwd(), 'output', 'cluj-napoca.gtfs.zip');
 const HHMM_RE = /_\d{4}$/;
+// `NTxxx` suffix (e.g. `38_0_LV_NT001`) marks Tranzy-fallback trips
+// — routes with no CTP CSV coverage. Tranzy doesn't publish
+// arrival_time, so we emit timepoint='0' with empty times and a
+// "no-time" sentinel in the trip_id so downstream parsers
+// (neary's parseLiveStartMin) know not to extract a start time.
+const NT_RE = /_NT\d{3,}$/;
 
 async function main() {
   const zipPath = env.GTFS_ZIP_PATH || DEFAULT_ZIP;
@@ -86,20 +92,24 @@ async function main() {
   const ids = lines.map((l) => l.split(',')[2]).filter(Boolean);
   console.log(`[trip-ids] found ${ids.length} trip_ids in trips.txt`);
 
-  const mismatches = ids.filter((id) => !re.test(id));
+  const mismatches = ids.filter((id) => !re.test(id) && !NT_RE.test(id));
   const freqAnchors = ids.filter((id) => id.includes('_FREQ_'));
+  const ntAnchors = ids.filter((id) => NT_RE.test(id));
 
   if (mismatches.length > 0) {
-    console.error(`[trip-ids] FAIL: ${mismatches.length}/${ids.length} trip_ids do not end with _HHMM`);
+    console.error(`[trip-ids] FAIL: ${mismatches.length}/${ids.length} trip_ids do not end with _HHMM or _NTxxx`);
     for (const id of mismatches.slice(0, 10)) console.error(`  - ${id}`);
     if (mismatches.length > 10) console.error(`  ... and ${mismatches.length - 10} more`);
-    console.error(`[trip-ids] fix: src/reconcile/trips.js makeTripId() should produce IDs ending in _HHMM`);
+    console.error(`[trip-ids] fix: src/reconcile/trips.js makeTripId() should produce IDs ending in _HHMM or _NTxxx`);
     exit(1);
   }
 
-  console.log(`[trip-ids] OK — all ${ids.length} trip_ids end with _HHMM`);
+  console.log(`[trip-ids] OK — all ${ids.length} trip_ids well-formed`);
   if (freqAnchors.length > 0) {
     console.log(`[trip-ids] (${freqAnchors.length} are frequency anchors, format _FREQ_<HHMM>)`);
+  }
+  if (ntAnchors.length > 0) {
+    console.log(`[trip-ids] (${ntAnchors.length} are Tranzy-fallback anchors, format _NTxxx — no real start time)`);
   }
   console.log(`[trip-ids] sample: ${ids.slice(0, 5).join(', ')}`);
   exit(0);

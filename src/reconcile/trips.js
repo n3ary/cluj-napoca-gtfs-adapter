@@ -100,31 +100,33 @@ export function reconcileTripsAndStopTimes(input) {
           continue;
         }
 
-        // Validate CSV terminal-name label against the resolved pattern's
-        // last stop. This is purely a NAMING consistency check — the
-        // trip direction itself is determined by the CSV column index
-        // (col 0 = dir 0, col 1 = dir 1), which never changes based on
-        // this label. A mismatch here means CTP's CSV uses a shorter /
-        // different spelling than the catalog (e.g. "P-ta Garii" vs
-        // "P-ța Gării Nord") — same physical stop, different label.
-        // We don't trust the CSV's terminal name as a headsign
-        // fallback in that case, but the trip times stay with their
-        // column-index-assigned direction.
-        const expectedTerminalName = orderedStops[orderedStops.length - 1]?.name ?? null;
-        const csvTerminalName = dir === 0 ? csv.outStopName : csv.inStopName;
-        const csvTerminalTrustable = terminalNamesMatch(expectedTerminalName, csvTerminalName);
-        if (!csvTerminalTrustable) {
+// Validate CSV origin-label against the resolved pattern's FIRST
+        // stop. Per CTP's CSV convention:
+//   - `in_stop_name`  = origin of col 0 buses  = first stop of dir 0
+//   - `out_stop_name` = origin of col 1 buses  = first stop of dir 1
+//   - (The other terminal is the destination of that direction;
+//    "out_stop_name" is also the last stop of dir 0 trips, which is
+//    why we use it as the headsign.)
+// If the origin doesn't match, the direction assignment is wrong —
+// the catalog's dir 0 might actually be what the CSV publishes in
+// col 1 (or vice versa), and trip times would land on the wrong
+// direction. Surface a strong warning.
+        const expectedOriginName = orderedStops[0]?.name ?? null;
+        const csvOriginName = dir === 0 ? csv.inStopName : csv.outStopName;
+        const csvOriginTrustable = terminalNamesMatch(expectedOriginName, csvOriginName);
+        if (!csvOriginTrustable) {
           localWarnings.push(
-            `CSV terminal label mismatch: ${routeShortName} dir=${dir} — ` +
-            `pattern last stop is "${expectedTerminalName}", CSV header says "${csvTerminalName}". ` +
-            `Skipping CSV terminal name as headsign fallback (likely a naming variant, not a direction issue).`,
+            `CSV origin mismatch: ${routeShortName} dir=${dir} — ` +
+            `pattern first stop is "${expectedOriginName}", CSV column header says "${csvOriginName}". ` +
+            `Direction assignment may be wrong; trip times for this direction should be reviewed. ` +
+            `Skipping CSV terminal name as headsign fallback for this route.`,
           );
         }
 
         const shape = (pattern.shapeId && input.shapesById.get(pattern.shapeId)) || [];
 
         const headsign = pattern.headsign
-          || (csvTerminalTrustable ? csvHeadsign : null)
+          || (csvOriginTrustable ? csvHeadsign : null)
           || routeRow.route_long_name
           || routeShortName;
 
