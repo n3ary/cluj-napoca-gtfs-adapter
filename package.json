@@ -10,6 +10,7 @@
   },
   "scripts": {
     "build": "node src/cli.js build",
+    "build:full": "npm run smoke:csv && npm run build",
     "validate": "node src/cli.js validate",
     "reconcile:dry": "node src/cli.js reconcile --dry-run",
     "smoke:csv": "node scripts/smoke-csv-parser.js",

@@ -290,85 +290,28 @@ function fixPostMidnight(times) {
 }
 
 /**
- * Fetch + parse one CSV.
+ * Fetch + parse one CSV from upstream CTP.
  *
- * The pipeline is split into two phases:
- *   - source: 'upstream' (default) — fetches from CTP directly.
- *     Used by reconcile / dev workflows.
- *   - source: 'disk' — reads from the `.build-input/` directory
- *     populated by a previous smoke run. Used by the build command
- *     in CI: smoke fetches once, build reads from disk. NO double
- *     fetch.
+ * The build pipeline NEVER calls this — the build command reads
+ * pre-fetched CSVs from `.build-input/` via {@link readCtpCsvFromDisk}.
+ * This function exists for the `reconcile` (dry-run) command and any
+ * other dev workflow that wants live data without running smoke first.
  *
- * If `source: 'disk'` is requested but the manifest doesn't exist,
- * the function throws — operator forgot to run smoke first. The
- * manifest is the source of truth for which CSVs smoke attempted
- * and which succeeded; without it we can't tell a legit 404 from a
- * smoke-wasn't-run bug.
+ * Failure modes (all soft — return null, downstream uses Tranzy
+ * fallback):
+ *   - network error / timeout
+ *   - 404 (CTP doesn't publish this CSV — legit catalog gap)
+ *   - other 4xx/5xx (server-side issue, worth surfacing)
+ *   - 200 OK but body isn't CSV (WAF challenge page)
  *
  * @param {string} routeShortName
  * @param {string} serviceKey
  * @param {object} [opts]
- * @param {'upstream' | 'disk'} [opts.source]
  * @param {string} [opts.baseUrl]
  * @param {typeof fetch} [opts.fetch]
  * @returns {Promise<CtpCsvSchedule | null>}
  */
 export async function fetchCtpCsv(routeShortName, serviceKey, opts = {}) {
-  const source = opts.source ?? 'upstream';
-  if (source === 'disk') {
-    return fetchCtpCsvFromDisk(routeShortName, serviceKey);
-  }
-  return fetchCtpCsvFromUpstream(routeShortName, serviceKey, opts);
-}
-
-/**
- * Read a CSV body from the .build-input/ directory populated by smoke.
- * Throws if the manifest is missing — that's an operator error, not a
- * catalog gap.
- *
- * @param {string} routeShortName
- * @param {string} serviceKey
- * @returns {CtpCsvSchedule | null}
- */
-function fetchCtpCsvFromDisk(routeShortName, serviceKey) {
-  const manifest = readStatusManifest();
-  if (!manifest) {
-    throw new Error(
-      `[ctp-csv] source='disk' but no .build-input/csv-status.json found. ` +
-      `Run scripts/smoke-csv-parser.js first to populate the build-input directory.`,
-    );
-  }
-  const entry = manifest.entries.find((e) => e.route === routeShortName && e.svc === serviceKey);
-  if (!entry) {
-    throw new Error(
-      `[ctp-csv] ${routeShortName}_${serviceKey} not found in smoke manifest. ` +
-      `Smoke may have run against a different route list — re-run it.`,
-    );
-  }
-  if (entry.status !== 'ok') {
-    // 404 / WAF / HTTP / network — smoke would have failed loud on
-    // infra, so reaching here implies a legit catalog gap (status=not-found).
-    // Return null and let downstream use Tranzy fallback.
-    return null;
-  }
-  const body = readCsvBody(routeShortName, serviceKey);
-  if (body == null) {
-    throw new Error(
-      `[ctp-csv] ${routeShortName}_${serviceKey} marked ok in manifest but body file is missing. ` +
-      `Re-run smoke.`,
-    );
-  }
-  return parseCtpCsv(body);
-}
-
-/**
- * @param {string} routeShortName
- * @param {string} serviceKey
- * @param {object} opts
- * @returns {Promise<CtpCsvSchedule | null>}
- */
-async function fetchCtpCsvFromUpstream(routeShortName, serviceKey, opts) {
   const baseUrl = opts.baseUrl ?? DEFAULT_BASE_URL;
   const fetchImpl = opts.fetch ?? globalThis.fetch;
   // CTP's URL convention strips whitespace from the route_short_name
@@ -407,6 +350,49 @@ async function fetchCtpCsvFromUpstream(routeShortName, serviceKey, opts) {
 }
 
 /**
+ * Read + parse one CSV from the `.build-input/` directory populated
+ * by a prior smoke run.
+ *
+ * Used by the build command. Throws if the manifest is missing —
+ * that's an operator error (smoke wasn't run), not a catalog gap.
+ * Returns null only for legit 404 entries that smoke recorded.
+ *
+ * @param {string} routeShortName
+ * @param {string} serviceKey
+ * @returns {CtpCsvSchedule | null}
+ */
+export function readCtpCsvFromDisk(routeShortName, serviceKey) {
+  const manifest = readStatusManifest();
+  if (!manifest) {
+    throw new Error(
+      `[ctp-csv] .build-input/csv-status.json not found. ` +
+      `Run scripts/smoke-csv-parser.js first to populate the build-input directory.`,
+    );
+  }
+  const entry = manifest.entries.find((e) => e.route === routeShortName && e.svc === serviceKey);
+  if (!entry) {
+    throw new Error(
+      `[ctp-csv] ${routeShortName}_${serviceKey} not found in smoke manifest. ` +
+      `Smoke may have run against a different route list — re-run it.`,
+    );
+  }
+  if (entry.status !== 'ok') {
+    // 404 / WAF / HTTP / network — smoke would have failed loud on
+    // infra, so reaching here implies a legit catalog gap (status=not-found).
+    // Return null and let downstream use Tranzy fallback.
+    return null;
+  }
+  const body = readCsvBody(routeShortName, serviceKey);
+  if (body == null) {
+    throw new Error(
+      `[ctp-csv] ${routeShortName}_${serviceKey} marked ok in manifest but body file is missing. ` +
+      `Re-run smoke.`,
+    );
+  }
+  return parseCtpCsv(body);
+}
+
+/**
  * Module-level dedup for WAF warnings. When CTP blocks us with a
  * challenge page, every fetchCtpCsv call would otherwise spam the
  * same `<!DOCTYPE html> ...` warning line. We log the first 3 unique
@@ -435,15 +421,27 @@ function wafWarnDedup(shortName, svcKey, body) {
 }
 
 /**
- * Fetch all (route, service) CSVs in parallel with bounded concurrency.
+ * Load all (route, service) CSVs in parallel with bounded concurrency.
+ *
+ * The `loadFn` parameter selects the data source:
+ *   - default `fetchCtpCsv` — fetches from CTP upstream (reconcile dev)
+ *   - `readCtpCsvFromDisk` — reads from .build-input/csv/ (build)
+ *
+ * The loadFn can be sync or async; this function awaits both via
+ * Promise.resolve().
  *
  * @param {Array<{shortName: string}>} routes
  * @param {object} [opts]
+ * @param {(shortName: string, svcKey: string, opts: object) => any} [opts.loadFn]
+ * @param {string[]} [opts.serviceKeys]
+ * @param {Record<string, string>} [opts.serviceIdMap]
+ * @param {number} [opts.concurrency]
  */
 export async function fetchAllCsvSchedules(routes, opts = {}) {
   const serviceKeys = opts.serviceKeys ?? DEFAULT_SERVICE_KEYS;
   const serviceIdMap = opts.serviceIdMap ?? DEFAULT_SERVICE_ID_MAP;
   const concurrency = opts.concurrency ?? 4;
+  const loadFn = opts.loadFn ?? fetchCtpCsv;
 
   /** @type {Array<() => Promise<void>>} */
   const tasks = [];
@@ -456,11 +454,11 @@ export async function fetchAllCsvSchedules(routes, opts = {}) {
     for (const svcKey of serviceKeys) {
       const shortName = route.shortName;
       const serviceId = serviceIdMap[svcKey] ?? svcKey.toUpperCase();
-      // Wrap in a function so the fetch only starts when the worker dequeues
+      // Wrap in a function so the load only starts when the worker dequeues
       // it — otherwise all tasks would kick off concurrently before the
       // concurrency cap could bite.
       tasks.push(async () => {
-        const parsed = await fetchCtpCsv(shortName, svcKey, opts);
+        const parsed = await Promise.resolve(loadFn(shortName, svcKey, opts));
         if (!parsed) {
           warnings.push(warnMsg(`CSV missing: ${shortName}_${svcKey}`));
           return;
