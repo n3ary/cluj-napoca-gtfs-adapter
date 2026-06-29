@@ -42,6 +42,10 @@ const DEFAULT_SERVICE_ID_MAP = { lv: 'LV', s: 'S', d: 'D' };
  *   inStopName: string,
  *   outStopName: string,
  *   departures: { dir0: string[], dir1: string[] },
+ *   frequencyAnnotations: {
+ *     dir0: { ranges: Array<{start: string, end: string}>, headways: Array<{minSec: number, maxSec: number|null, avgSec: number}> },
+ *     dir1: { ranges: Array<{start: string, end: string}>, headways: Array<{minSec: number, maxSec: number|null, avgSec: number}> },
+ *   },
  *   warnings: Array<{row: number, col: number, value: string, reason: string}>,
  * }} CtpCsvSchedule
  */
@@ -61,32 +65,35 @@ export function parseCtpCsv(text) {
 
   /** @type {{dir0: string[], dir1: string[]}} */
   const departures = { dir0: [], dir1: [] };
+  const frequencyAnnotations = {
+    dir0: { ranges: [], headways: [] },
+    dir1: { ranges: [], headways: [] },
+  };
   /** @type {Array<{row: number, col: number, value: string, reason: string}>} */
   const warnings = [];
 
   for (let i = 5; i < lines.length; i++) {
     const parts = lines[i].split(',').map((p) => p.trim());
-    if (parts[0]) {
-      if (/^\d{1,2}:\d{2}$/.test(parts[0])) {
-        departures.dir0.push(parts[0]);
-      } else {
-        warnings.push({
-          row: i,
-          col: 0,
-          value: parts[0],
-          reason: 'non-HH:MM cell dropped (frequency annotation?)',
+    for (const [colIdx, colKey] of [[0, 'dir0'], [1, 'dir1']]) {
+      const cell = parts[colIdx];
+      if (!cell) continue;
+      const cls = classifyCell(cell);
+      if (cls.type === 'time') {
+        departures[colKey].push(cls.value);
+      } else if (cls.type === 'range') {
+        frequencyAnnotations[colKey].ranges.push({ start: cls.start, end: cls.end });
+      } else if (cls.type === 'headway') {
+        frequencyAnnotations[colKey].headways.push({
+          minSec: cls.minSec,
+          maxSec: cls.maxSec,
+          avgSec: cls.avgSec,
         });
-      }
-    }
-    if (parts[1]) {
-      if (/^\d{1,2}:\d{2}$/.test(parts[1])) {
-        departures.dir1.push(parts[1]);
       } else {
         warnings.push({
           row: i,
-          col: 1,
-          value: parts[1],
-          reason: 'non-HH:MM cell dropped (frequency annotation?)',
+          col: colIdx,
+          value: cell,
+          reason: 'unrecognized cell format (neither HH:MM, range, nor headway)',
         });
       }
     }
@@ -95,8 +102,50 @@ export function parseCtpCsv(text) {
   fixPostMidnight(departures.dir1);
   return {
     routeLongName, serviceName, serviceStart,
-    inStopName, outStopName, departures, warnings,
+    inStopName, outStopName, departures, frequencyAnnotations, warnings,
   };
+}
+
+/**
+ * Classify a single CSV cell value.
+ * @param {string} value
+ * @returns {{type: 'time', value: string}
+ *           | {type: 'range', start: string, end: string}
+ *           | {type: 'headway', minSec: number, maxSec: number|null, avgSec: number}
+ *           | {type: 'unknown'}}
+ */
+export function classifyCell(value) {
+  // Specific time: HH:MM
+  if (/^\d{1,2}:\d{2}$/.test(value)) {
+    return { type: 'time', value };
+  }
+  // Range: HH:MM-HH:MM  (e.g. "05:05-22:40")
+  const rangeMatch = value.match(/^(\d{1,2}:\d{2})-(\d{1,2}:\d{2})$/);
+  if (rangeMatch) {
+    return { type: 'range', start: rangeMatch[1], end: rangeMatch[2] };
+  }
+  // Headway with range: "10-20min", "5min", "30-40min", "10-20"
+  const rangeMinMatch = value.match(/^(\d{1,2})-(\d{1,2})min$/);
+  if (rangeMinMatch) {
+    const lo = parseInt(rangeMinMatch[1], 10);
+    const hi = parseInt(rangeMinMatch[2], 10);
+    return { type: 'headway', minSec: lo * 60, maxSec: hi * 60, avgSec: Math.round((lo + hi) / 2 * 60) };
+  }
+  const singleMinMatch = value.match(/^(\d{1,2})min$/);
+  if (singleMinMatch) {
+    const lo = parseInt(singleMinMatch[1], 10);
+    return { type: 'headway', minSec: lo * 60, maxSec: null, avgSec: lo * 60 };
+  }
+  const rangeNoUnit = value.match(/^(\d{1,2})-(\d{1,2})$/);
+  if (rangeNoUnit) {
+    const lo = parseInt(rangeNoUnit[1], 10);
+    const hi = parseInt(rangeNoUnit[2], 10);
+    // Plausibility guard: minutes go up to ~120. Anything above is suspicious.
+    if (lo <= 120 && hi <= 120 && lo < hi) {
+      return { type: 'headway', minSec: lo * 60, maxSec: hi * 60, avgSec: Math.round((lo + hi) / 2 * 60) };
+    }
+  }
+  return { type: 'unknown' };
 }
 
 /**

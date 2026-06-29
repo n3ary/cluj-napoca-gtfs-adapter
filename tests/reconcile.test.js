@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 
 import { reconcile } from '../src/reconcile/index.js';
+import { parseCtpCsv } from '../src/sources/ctp-csv.js';
 import { fixtures } from './fixtures/index.js';
 import { buildFixtureSeedMemory } from './fixtures/seed-builder.js';
 
@@ -10,15 +11,10 @@ function buildCsvByRouteService() {
   for (const [shortName, bySvc] of Object.entries(fixtures.csv)) {
     const m = new Map();
     for (const [svcId, body] of Object.entries(bySvc)) {
-      m.set(svcId, {
-        routeLongName: shortName,
-        serviceName: 'Luni - Vineri',
-        serviceStart: '01.06.2026',
-        inStopName: 'terminus',
-        outStopName: 'origin',
-        departures: { dir0: ['06:00', '06:30'], dir1: ['06:30', '07:00'] },
-        warnings: [],
-      });
+      // Use the real parser so the structure matches what production produces
+      // (incl. the frequencyAnnotations field).
+      const parsed = parseCtpCsv(body);
+      m.set(svcId, parsed);
     }
     out.set(shortName, m);
   }
@@ -66,12 +62,17 @@ describe('reconcile', () => {
   it('generates canonical CTP-format trip_ids matching cluj-rt-feed.gtfs.ro', () => {
     const { files } = reconcile({ seed, tranzy: null, csv, options: { buildDate: new Date('2026-06-29') } });
     const tripLines = files['trips.txt'].split('\n').slice(1).filter(Boolean);
+    expect(tripLines.length).toBeGreaterThan(0);
     for (const line of tripLines) {
       const cols = line.split(',');
       const tripId = cols[2];
-      // Pattern: <route_id>_<dir>_<serviceId>_<seq>_<HHMM>
-      // route_id may contain letters (M26, 25N), not just digits.
-      expect(tripId).toMatch(/^[A-Za-z0-9]+_[01]_(LV|S|D|LD)_\d+_\d{4}$/);
+      // Pattern is one of:
+      //   <route_id>_<dir>_<serviceId>_<seq>_<HHMM>          (regular trips)
+      //   <route_id>_<dir>_<serviceId>_FREQ_<HHMM>            (frequency anchors)
+      // route_id may contain letters (M26, 25N).
+      expect(tripId).toMatch(
+        /^[A-Za-z0-9]+_[01]_(LV|S|D|LD)(?:_\d+_\d{4}|_FREQ_\d{4})$/,
+      );
     }
   });
 

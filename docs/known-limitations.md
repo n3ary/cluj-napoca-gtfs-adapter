@@ -3,29 +3,71 @@
 > What's still faked, approximated, or just plain missing. Each entry
 > links to the upstream issue or source so we know what to track.
 
-## 1. CSV frequency annotations are silently dropped
+## 1. ~~CSV frequency annotations are silently dropped~~ — FIXED in v0.1
 
 **Source:** [`neary-gtfs#15`](https://github.com/ciotlosm/neary-gtfs/issues/15) (M26)
 
 The CTP CSV occasionally publishes cells that aren't `HH:MM` departure
 times — they're headway / range annotations like `05:05-22:40` or
-`10-20min`. The current parser matches `/^\d{1,2}:\d{2}$/` and ignores
-anything else:
+`10-20min`. The v0.0 adapter dropped these silently. The v0.1 adapter
+parses them and emits a `frequencies.txt` row + a synthetic anchor trip.
+
+Recognized cell formats:
+
+| Cell | Classification | Effect |
+|---|---|---|
+| `HH:MM` | time | Emitted as a regular trip in `trips.txt` + `stop_times.txt`. |
+| `HH:MM-HH:MM` | range | Operating-hours window. Stored in `frequencyAnnotations.<dir>.ranges`. |
+| `Nmin` or `N-Mmin` | headway | Headway in minutes. Stored in `frequencyAnnotations.<dir>.headways`. |
+| `N-M` (no unit, ≤120) | headway (no-unit) | Same as `N-Mmin`. |
+| Anything else | unknown | Logged as a warning; cell is dropped. |
+
+For M26 LV (the original #15 example):
 
 ```
-,04:44                  ← kept
-,05:05                  ← kept
-05:05-22:40,05:23       ← dropped (col 1 = time range)
-10-20min,05:32          ← dropped (col 1 = frequency)
+05:05-22:40,05:23   ← range + specific dir1 time
+10-20min,05:32      ← headway + specific dir1 time
+05:41,05:50          ← specific dir0 + specific dir1 times
 ```
 
-For M26 specifically this is the difference between "0 trips in the
-output" and "a normal schedule". We emit a build warning per dropped
-cell (see `reconciliation-rules.md` § data-quality check #2) but the
-departures are not recovered.
+The reconciler derives:
+- **Window:** earliest start (`05:05`) → latest end (`22:40`)
+- **Headway:** average of headway range = `(10 + 20) / 2 = 15 min = 900 s`
 
-**Real fix:** parse the range and frequency annotations and emit a
-`frequencies.txt` row. Out of scope for the first cut — wanted for v0.2.
+…and emits:
+
+```
+frequencies.txt:
+  M26_0_LV_FREQ_0505,05:05:00,22:40:00,900,0
+
+trips.txt (anchor):
+  M26,LV,M26_0_LV_FREQ_0505,Selimbar,0,92_0
+
+stop_times.txt (anchor):
+  M26_0_LV_FREQ_0505,05:05:00,05:05:00,D,0,0
+  M26_0_LV_FREQ_0505,05:07:00,05:07:00,E,1,500
+```
+
+The anchor trip uses the resolved pattern's stop sequence (seed → Tranzy
+fallback) and its scheduled times are at the start of the window. GTFS
+consumers interpret `frequencies.txt` rows as overriding the anchor's
+scheduled times, so the effective schedule is "every 15 minutes between
+05:05 and 22:40".
+
+**Edge cases (still approximate):**
+
+- **Only a headway, no range.** We use the default window `05:00–23:00`
+  (urban-bus assumption) and log a warning.
+- **Only a range, no headway.** We use the default headway 900 s
+  (15 min) and log a warning.
+- **Multiple non-overlapping ranges** on the same route/day. We use
+  earliest start and latest end. A future refinement could emit one
+  frequencies.txt row per range.
+- **Range crossing midnight** (e.g. `22:00-02:00`). The parser doesn't
+  recognize this; treat as malformed → warning.
+
+Test coverage: `tests/frequencies.test.js`. The fix is also wired into
+the `reconcile()` orchestrator and surfaces in `stats.frequencyAnchors`.
 
 ## 2. Routes without CSV data fall back to the (potentially stale) seed
 

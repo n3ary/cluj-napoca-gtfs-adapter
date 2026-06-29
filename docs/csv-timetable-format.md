@@ -94,7 +94,7 @@ The `prevMinutes > 20 * 60` (20:00) guard prevents the wrap from triggering
 when the operator genuinely has a backwards jump in the schedule (rare but
 possible — early-morning routes with intentional ordering changes).
 
-### Non-`HH:MM` cells (frequency / range annotations)
+### Non-`HH:MM` cells (frequency / range annotations) — implemented in v0.1
 
 **Source:** [`neary-gtfs#15`](https://github.com/ciotlosm/neary-gtfs/issues/15)
 
@@ -102,25 +102,45 @@ Some CSVs (notably M26's dir0 column) carry range or frequency annotations
 instead of individual times:
 
 ```
-,04:44                  ← individual time, kept
-,05:05                  ← individual time, kept
-05:05-22:40,05:23       ← col 1 = range "from-to", dropped
-10-20min,05:32          ← col 1 = frequency, dropped
+05:05-22:40,05:23       ← col 0 = range "05:05 to 22:40"
+10-20min,05:32          ← col 0 = headway "10–20 minutes"
+05:41,05:50             ← col 0 = time, col 1 = time
 ```
 
-The parser matches `/^\d{1,2}:\d{2}$/` per cell and silently ignores anything
-else. For M26 specifically this collapses `dir0` to empty, leaving only
-`dir1` (which carries the real individual times) — and then `dir1` is
-silently dropped because the Transitous seed has no `direction_id=1`
-pattern for M26 (same root cause as `neary-gtfs#13` for 25N).
+The v0.1 parser classifies each cell into one of three categories:
 
-**Current behavior:** the dropped cells produce a `WARN` line per cell in
-the build log but the departures are not recovered. See
-[`known-limitations.md` §1](./known-limitations.md#1-csv-frequency-annotations-are-silently-dropped).
+| Cell pattern | Classification | Effect |
+|---|---|---|
+| `HH:MM` | time | Pushed to `departures.<dir>`. Becomes a regular trip. |
+| `HH:MM-HH:MM` | range | Pushed to `frequencyAnnotations.<dir>.ranges`. Used by the frequencies reconciler to compute the operating window. |
+| `Nmin` or `N-Mmin` | headway | Pushed to `frequencyAnnotations.<dir>.headways`. Used by the frequencies reconciler to compute the headway. |
+| anything else | unknown | Logged as a warning; cell is dropped. |
 
-**Future behavior (v0.2):** parse `HH:MM-HH:MM` ranges as `frequencies.txt`
-rows (`start_time`, `end_time`, `headway_secs=0` for "continuous"), and
-`N-Mmin` as `headway_secs = average(N+M)/2`. Out of scope for v0.1.
+**Concrete M26 LV example:**
+
+```
+05:05-22:40,05:23   →  dir0 range {05:05, 22:40},  dir1 time 05:23
+10-20min,05:32      →  dir0 headway {min:600s, max:1200s, avg:900s},  dir1 time 05:32
+05:41,05:50          →  dir0 time 05:41,  dir1 time 05:50
+```
+
+The frequencies reconciler derives (for dir0 LV): window `05:05–22:40`,
+headway `900 s` (avg of 10–20 min), and emits:
+
+```
+frequencies.txt:
+  M26_0_LV_FREQ_0505,05:05:00,22:40:00,900,0
+
+trips.txt (anchor):
+  M26,LV,M26_0_LV_FREQ_0505,Selimbar,0,92_0
+
+stop_times.txt (anchor):
+  M26_0_LV_FREQ_0505,05:05:00,05:05:00,D,0,0
+  M26_0_LV_FREQ_0505,05:07:00,05:07:00,E,1,500
+```
+
+See `docs/known-limitations.md` §1 for the full fixed-state description
+and the edge cases (only-headway / only-range / cross-midnight).
 
 ### Sanity checks
 

@@ -14,16 +14,23 @@ describe('parseCtpCsv', () => {
     expect(result.warnings).toHaveLength(0);
   });
 
-  it('drops non-HH:MM cells with a warning (M26 frequency annotation)', () => {
+  it('classifies range + headway cells into frequencyAnnotations (M26)', () => {
     const result = parseCtpCsv(fixtures.csv.M26.LV);
-    // dir0 column has 2 frequency annotations → dropped with warnings
-    // dir0 = ['05:41'] (the only valid HH:MM in col 0)
-    // dir1 = ['05:23', '05:32', '05:50'] (all valid in col 1)
+    // dir0 column: range "05:05-22:40", headway "10-20min", time "05:41"
+    // dir1 column: three individual times
     expect(result.departures.dir0).toEqual(['05:41']);
     expect(result.departures.dir1).toEqual(['05:23', '05:32', '05:50']);
-    expect(result.warnings.length).toBe(2);
-    expect(result.warnings[0].reason).toMatch(/non-HH:MM/);
-    expect(result.warnings[0].col).toBe(0);
+    expect(result.frequencyAnnotations.dir0.ranges).toEqual([
+      { start: '05:05', end: '22:40' },
+    ]);
+    expect(result.frequencyAnnotations.dir0.headways).toEqual([
+      { minSec: 600, maxSec: 1200, avgSec: 900 },
+    ]);
+    // dir1 had no frequency annotations.
+    expect(result.frequencyAnnotations.dir1.ranges).toEqual([]);
+    expect(result.frequencyAnnotations.dir1.headways).toEqual([]);
+    // No warnings — we classified, not dropped.
+    expect(result.warnings).toEqual([]);
   });
 
   it('rewrites post-midnight times as HH+24', () => {

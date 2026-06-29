@@ -19,6 +19,7 @@ import { reconcileRoutes, routesToTxt } from './routes.js';
 import { reconcileStops, stopsToTxt } from './stops.js';
 import { reconcileShapes, shapesToTxt } from './shapes.js';
 import { reconcileTripsAndStopTimes, tripsToTxt, stopTimesToTxt } from './trips.js';
+import { reconcileFrequencies, frequenciesToTxt } from './frequencies.js';
 import { reconcileCalendar, calendarToTxt } from './calendar.js';
 import { runDataQualityChecks } from './data-quality.js';
 import { tranzyPatternsByRouteDir } from './patterns.js';
@@ -51,12 +52,31 @@ export function reconcile({ seed, tranzy, csv, options = {} }) {
   const { routes, byRouteId: routesByRouteId } = reconcileRoutes({ seed, tranzy, warnings });
   const { stops, byStopId: stopsByStopId } = reconcileStops({ seed, tranzy, warnings });
   const { shapesById, rows: shapeRows } = reconcileShapes({ seed, tranzy, warnings });
+  const seedPatterns = extractSeedPatterns(seed);
+  const tranzyPatterns = tranzyPatternsByRouteDir(tranzy);
   const { tripRows, stopTimeRows, tripDiagnostics } = reconcileTripsAndStopTimes({
     byRouteService: csv.byRouteService,
     routesByRouteId,
     stopsByStopId,
-    seedPatterns: extractSeedPatterns(seed),
-    tranzyPatterns: tranzyPatternsByRouteDir(tranzy),
+    seedPatterns,
+    tranzyPatterns,
+    shapesById,
+    warnings,
+    timing: options.timing,
+  });
+
+  // Frequencies — implements #15 fix for CSV annotations like "05:05-22:40"
+  // and "10-20min". Emits anchor trips + frequencies.txt rows.
+  const {
+    tripRows: freqTripRows,
+    stopTimeRows: freqStopTimeRows,
+    frequencyRows,
+  } = reconcileFrequencies({
+    byRouteService: csv.byRouteService,
+    routesByRouteId,
+    stopsByStopId,
+    seedPatterns,
+    tranzyPatterns,
     shapesById,
     warnings,
     timing: options.timing,
@@ -89,14 +109,17 @@ export function reconcile({ seed, tranzy, csv, options = {} }) {
   });
 
   const agencyTxt = ensureAgencyTimezone(seed.agencyTxt, options.timezone ?? 'Europe/Bucharest');
+  const allTripRows = [...tripRows, ...freqTripRows];
+  const allStopTimeRows = [...stopTimeRows, ...freqStopTimeRows];
   const files = {
     'agency.txt': agencyTxt,
     'routes.txt': routesToTxt(routes),
     'stops.txt': stopsToTxt(stops),
     'shapes.txt': shapeRows.length === 0 ? '' : shapesToTxt(shapeRows),
-    'trips.txt': tripsToTxt(tripRows),
-    'stop_times.txt': stopTimesToTxt(stopTimeRows),
+    'trips.txt': tripsToTxt(allTripRows),
+    'stop_times.txt': stopTimesToTxt(allStopTimeRows),
     'calendar.txt': calendarToTxt(calendarRows),
+    'frequencies.txt': frequenciesToTxt(frequencyRows),
     'feed_info.txt': feedInfoTxt({
       buildDate: options.buildDate ?? new Date(),
       startDate: calendarRows[0]?.start_date,
@@ -113,8 +136,9 @@ export function reconcile({ seed, tranzy, csv, options = {} }) {
     routes: routes.length,
     stops: stops.length,
     shapes: shapeRows.length === 0 ? 0 : new Set(shapeRows.map((r) => r.shape_id)).size,
-    trips: tripRows.length,
-    stopTimes: stopTimeRows.length,
+    trips: allTripRows.length,
+    stopTimes: allStopTimeRows.length,
+    frequencyAnchors: frequencyRows.length,
     calendarServices: calendarRows.length,
     tripDiagnostics,
   };
