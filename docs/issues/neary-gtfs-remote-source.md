@@ -1,8 +1,10 @@
 # Allow specific feeds to source from other repos (remote GTFS source)
 
-> **Title:** Allow specific feeds to source from other repos (remote GTFS source)
-> **Labels:** enhancement
-> **Repo:** ciotlosm/neary-gtfs
+Issue metadata to use when filing this in `ciotlosm/neary-gtfs`:
+
+- **Title:** Allow specific feeds to source from other repos (remote GTFS source)
+- **Labels:** enhancement
+- **Assignee:** (none — open for grabs)
 
 ## Goal
 

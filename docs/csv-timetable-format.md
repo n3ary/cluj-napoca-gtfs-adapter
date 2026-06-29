@@ -1,5 +1,6 @@
 # CTP CSV timetable format
 
+> [!NOTE]
 > Reverse-engineered from `feeds/cluj-napoca/build.js` (the parser that's been
 > scraping `ctpcj.ro` daily since mid-2026). Captured 2026-06-29.
 

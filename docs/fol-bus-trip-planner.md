@@ -1,5 +1,6 @@
 # `danielgavrila2/FOL-Bus-Trip-Planner` — notes
 
+> [!NOTE]
 > Reference project: <https://github.com/danielgavrila2/FOL-Bus-Trip-Planner>
 > Captured 2026-06-29 from a fresh look at the public repo.
 

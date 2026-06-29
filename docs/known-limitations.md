@@ -1,5 +1,6 @@
 # Known limitations
 
+> [!NOTE]
 > What's still faked, approximated, or just plain missing. Each entry
 > links to the upstream issue or source so we know what to track.
 

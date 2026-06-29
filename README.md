@@ -3,6 +3,7 @@
 Reconciled GTFS Schedule publisher for Cluj-Napoca (CTP) — combines three
 independent data sources into the most complete, error-free feed possible.
 
+> [!NOTE]
 > Built to retire `neary-gtfs/feeds/cluj-napoca/build.js` once stable.
 > The daily published zip at `output/cluj-napoca.gtfs.zip` is what
 > `neary-gtfs` will eventually proxy.
@@ -97,16 +98,43 @@ CSVs for ~63 of ~300 routes. Combining them in a single repo lets us:
 
 ## Known limitations
 
-See [`docs/known-limitations.md`](./docs/known-limitations.md). The big
-ones:
+See [`docs/known-limitations.md`](./docs/known-limitations.md) for the
+full list. The big ones:
 
-- CSV frequency annotations (`05:05-22:40`, `10-20min`) are dropped, not
-  parsed (`neary-gtfs#15`, M26).
 - Calendar is synthesized from the CSV keys we actually scraped; not
   aligned with CTP's published service calendar.
 - `cluj-rt-feed.gtfs.ro` GTFS-RT trip-ID parity is a contract, not
   verified automatically — if the upstream RT feed changes format, our
   JOINs break silently.
+- Routes without a CSV *and* without a Transitous or Tranzy pattern
+  emit zero trips. See [`docs/known-limitations.md` §2](./docs/known-limitations.md#2-routes-without-csv-data-fall-back-to-the-potentially-stale-seed)
+  for the taxonomy (school transport, suspended, event routes, etc.).
+
+## Documentation conventions
+
+All `*.md` files in this repo follow
+[GitHub's alerts standard](https://docs.github.com/en/get-started/writing-on-github/getting-started-with-writing-and-formatting-on-github/basic-writing-and-formatting-syntax#alerts)
+for callouts — **not** plain blockquotes. Use the right type for the
+semantics:
+
+| Alert | When to use |
+|---|---|
+| `> [!NOTE]` | Informational context — source attributions, background facts, doc purpose. |
+| `> [!IMPORTANT]` | Crucial information the reader must not skip — invariants, contract details. |
+| `> [!WARNING]` | Critical content demanding immediate attention — risky behavior, data loss scenarios. |
+| `> [!TIP]` | Useful advice, alternative approaches, helpful quotes from other code/docs. |
+| `> [!CAUTION]` | Negative potential consequences of an action — "if you do X, Y will break". |
+
+A multi-line alert looks like this:
+
+```markdown
+> [!IMPORTANT]
+> **This is a contract.** Don't change this without coordinating
+> with the realtime bridge repo.
+```
+
+Plain `>` blockquotes are reserved for actual quoted material (e.g.
+a verbatim citation from another project's code or docs).
 
 ## Deployment
 

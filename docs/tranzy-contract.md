@@ -1,5 +1,6 @@
 # Tranzy.ai v1 opendata — verified contract
 
+> [!NOTE]
 > Captured from the `ctp-gtfs-adapter` project (private handoff) and
 > cross-checked against
 > [`danielgavrila2/FOL-Bus-Trip-Planner/src/backend/services/tranzy_service.py`](https://github.com/danielgavrila2/FOL-Bus-Trip-Planner)
@@ -88,8 +89,11 @@ as empty when called directly.
 
 The ctp-gtfs-adapter Python client made this explicit in `fetch_all()`:
 
+> [!TIP]
 > *"Failures on optional endpoints (calendar / stop_times) are downgraded to
 > empty lists so a single missing endpoint doesn't kill the build."*
+> — the original Python `ctp-gtfs-adapter` `fetch_all()` docstring. Same
+> behavior in the Node port (`src/sources/tranzy.js`).
 
 Same behavior in the Node port (`src/sources/tranzy.js`).
 
