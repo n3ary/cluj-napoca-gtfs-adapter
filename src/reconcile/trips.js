@@ -56,7 +56,20 @@ export function reconcileTripsAndStopTimes(input) {
   /** @type {string[]} */
   const localWarnings = [];
 
-for (const [routeShortName, byService] of input.byRouteService.entries()) {
+// Aggregate "no pattern" diagnostics by category for a single
+  // summary line at the end of the build (instead of one line per
+  // (route, dir, service-day) — that would be hundreds of lines for
+  // the full network and drown the build log).
+  const noPatternStats = {
+    bothDirsTranzyMissing: new Set(),   // route: no pattern in Tranzy
+    bothDirsSeedMissing: new Set(),     // route: Tranzy has, but seed missing
+    bothDirsBothMissing: new Set(),     // route: both Tranzy and seed missing
+    oneDirTranzyMissing: new Set(),     // route: 1 dir missing in Tranzy
+    oneDirSeedMissing: new Set(),       // route: 1 dir missing in seed (Tranzy has it)
+    oneDirBothMissing: new Set(),       // route: 1 dir missing in both
+  };
+
+  for (const [routeShortName, byService] of input.byRouteService.entries()) {
     // Find the route row matching this short name (CSV uses short name; rows use route_id).
     const routeRow = findRouteByShortName(input.routesByRouteId, routeShortName);
     if (!routeRow) {
@@ -119,6 +132,14 @@ for (const [routeShortName, byService] of input.byRouteService.entries()) {
       const pattern = tranzyPattern ?? seedPattern;
       if (!pattern || pattern.stops.length === 0) {
         plans.set(dir, { pattern: null, orderedStops: null, csvOriginTrustable: false, headsign: null });
+        // Track for the summary — Tranzy vs seed missing tells the
+        // user which source to chase. Routes with no pattern in
+        // EITHER source can only be fixed upstream.
+        const tranzyMissing = !tranzyPattern;
+        const seedMissing = !seedPattern;
+        const both = tranzyMissing && seedMissing;
+        // Decide which bucket (filled in below once we know both dirs).
+        plans.set(dir, Object.assign(plans.get(dir) ?? {}, { _tranzyMissing: tranzyMissing, _seedMissing: seedMissing, _bothMissing: both }));
         continue;
       }
       const orderedStops = pattern.stops
@@ -155,6 +176,37 @@ for (const [routeShortName, byService] of input.byRouteService.entries()) {
         || routeShortName;
       const shape = (pattern.shapeId && input.shapesById.get(pattern.shapeId)) || [];
       plans.set(dir, { pattern, orderedStops, csvOriginTrustable, headsign, shape });
+    }
+
+    // Bucket the route by how many of its directions lack a pattern,
+    // and which source(s) are missing. Used by the aggregate
+    // summary at the end of the function — saves emitting one line
+    // per (route, dir, service-day) which would be hundreds of lines.
+    const plan0 = plans.get(0);
+    const plan1 = plans.get(1);
+    const dir0Missing = plan0 && plan0._bothMissing !== undefined;
+    const dir1Missing = plan1 && plan1._bothMissing !== undefined;
+    const d0TranzyMissing = !!(plan0 && plan0._tranzyMissing);
+    const d0SeedMissing = !!(plan0 && plan0._seedMissing);
+    const d0BothMissing = !!(plan0 && plan0._bothMissing);
+    const d1TranzyMissing = !!(plan1 && plan1._tranzyMissing);
+    const d1SeedMissing = !!(plan1 && plan1._seedMissing);
+    const d1BothMissing = !!(plan1 && plan1._bothMissing);
+    if (dir0Missing && dir1Missing) {
+      if (d0BothMissing && d1BothMissing) noPatternStats.bothDirsBothMissing.add(routeShortName);
+      else if (d0TranzyMissing && d1TranzyMissing) noPatternStats.bothDirsTranzyMissing.add(routeShortName);
+      else if (d0SeedMissing && d1SeedMissing) noPatternStats.bothDirsSeedMissing.add(routeShortName);
+      // Mixed sources across dirs — fall back to "one dir" buckets per direction.
+      else if (d0TranzyMissing || d1TranzyMissing) noPatternStats.oneDirTranzyMissing.add(routeShortName);
+      else noPatternStats.oneDirBothMissing.add(routeShortName);
+    } else if (dir0Missing || dir1Missing) {
+      if ((dir0Missing && d0BothMissing) || (dir1Missing && d1BothMissing)) {
+        noPatternStats.oneDirBothMissing.add(routeShortName);
+      } else if ((dir0Missing && d0TranzyMissing) || (dir1Missing && d1TranzyMissing)) {
+        noPatternStats.oneDirTranzyMissing.add(routeShortName);
+      } else {
+        noPatternStats.oneDirSeedMissing.add(routeShortName);
+      }
     }
 
     // Compute the tier + emit ONE summary warning per route (not per
@@ -218,7 +270,9 @@ for (const [routeShortName, byService] of input.byRouteService.entries()) {
         if (!departures || departures.length === 0) continue;
         const plan = plans.get(dir);
         if (!plan || !plan.pattern) {
-          localWarnings.push(`No pattern for ${routeShortName} (${routeId}) dir=${dir} — dropping ${departures.length} departures`);
+          // Don't emit per-iteration — the no-pattern summary is computed at the
+          // end of the function. (Was: one warning per (route, dir, service-day)
+          // = hundreds of lines for the full network.)
           continue;
         }
         const { pattern, orderedStops, shape, headsign } = plan;
@@ -271,6 +325,39 @@ for (const [routeShortName, byService] of input.byRouteService.entries()) {
         }
       }
     }
+  }
+
+  // Aggregate "no pattern" summary — one line per category instead of
+  // one per (route, dir, service-day). Tells the user how many routes
+  // lost trip generation because Tranzy/seed patterns were missing,
+  // and which source is to blame.
+  const totalRoutes = noPatternStats.bothDirsBothMissing.size
+    + noPatternStats.bothDirsTranzyMissing.size
+    + noPatternStats.bothDirsSeedMissing.size
+    + noPatternStats.oneDirBothMissing.size
+    + noPatternStats.oneDirTranzyMissing.size
+    + noPatternStats.oneDirSeedMissing.size;
+  if (totalRoutes > 0) {
+    const parts = [];
+    if (noPatternStats.bothDirsBothMissing.size > 0) {
+      parts.push(`${noPatternStats.bothDirsBothMissing.size} routes (both directions) — missing in Tranzy AND Transitous seed`);
+    }
+    if (noPatternStats.bothDirsTranzyMissing.size > 0) {
+      parts.push(`${noPatternStats.bothDirsTranzyMissing.size} routes (both directions) — missing in Tranzy`);
+    }
+    if (noPatternStats.bothDirsSeedMissing.size > 0) {
+      parts.push(`${noPatternStats.bothDirsSeedMissing.size} routes (both directions) — missing in Transitous seed`);
+    }
+    if (noPatternStats.oneDirBothMissing.size > 0) {
+      parts.push(`${noPatternStats.oneDirBothMissing.size} routes (one direction) — missing in both sources`);
+    }
+    if (noPatternStats.oneDirTranzyMissing.size > 0) {
+      parts.push(`${noPatternStats.oneDirTranzyMissing.size} routes (one direction) — missing in Tranzy`);
+    }
+    if (noPatternStats.oneDirSeedMissing.size > 0) {
+      parts.push(`${noPatternStats.oneDirSeedMissing.size} routes (one direction) — missing in Transitous seed`);
+    }
+    localWarnings.push(`trips: ${totalRoutes} routes have no usable pattern — ${parts.join('; ')}. Trips for these (route, dir) are dropped.`);
   }
 
   input.warnings.push(...localWarnings);
