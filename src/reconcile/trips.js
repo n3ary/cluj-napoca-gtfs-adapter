@@ -323,18 +323,25 @@ export function reconcileTripsAndStopTimes(input) {
       let tier;
       /** @type {{severity: 'info' | 'warn', message: string} | null} */
       let summary = null;
+      // tierMatched guards against the no-match fallback firing when a
+      // tier fired silently (e.g. tier 1 exact-both sets tier but no
+      // summary). Without this flag, a silent tier-1 match would
+      // spuriously fall through to the no-match branch below.
+      let tierMatched = false;
       if (bothExact) {
         tier = 'exact-both';
+        tierMatched = true;
         // Silent — perfect alignment between catalog and CSV.
       } else if (anyExact) {
         tier = 'exact-one';
+        tierMatched = true;
         const exactDir = d0.exact ? 0 : 1;
         const fuzzyDir = exactDir === 0 ? 1 : 0;
         const exactLabel = exactDir === 0 ? inLabel : outLabel;
         const fuzzyLabel = fuzzyDir === 0 ? inLabel : outLabel;
         const exactCat = exactDir === 0 ? cat0 : cat1;
         const fuzzyCat = fuzzyDir === 0 ? cat0 : cat1;
-        summary = warnMsg(
+        summary = info(
           `CSV origin label partial match for ${routeShortName}: ` +
           `dir=${exactDir} matches: catalog="${exactCat.name}" (from ${exactCat.source}) == csv="${exactLabel}". ` +
           `dir=${fuzzyDir} mismatches: catalog="${fuzzyCat.name}" (from ${fuzzyCat.source}) vs csv="${fuzzyLabel}". ` +
@@ -342,6 +349,7 @@ export function reconcileTripsAndStopTimes(input) {
         );
       } else if (bothFuzzy) {
         tier = 'fuzzy-both';
+        tierMatched = true;
         summary = info(
           `CSV origin labels fuzzy-matched for ${routeShortName}: ` +
           `dir=0 catalog="${cat0.name}" (from ${cat0.source}) ≈ csv="${inLabel}"; ` +
@@ -350,13 +358,14 @@ export function reconcileTripsAndStopTimes(input) {
         );
       } else if (anyFuzzy) {
         tier = 'fuzzy-one';
+        tierMatched = true;
         const fuzzyDir = d0.fuzzy ? 0 : 1;
         const noMatchDir = fuzzyDir === 0 ? 1 : 0;
         const fuzzyLabel = fuzzyDir === 0 ? inLabel : outLabel;
         const noMatchLabel = noMatchDir === 0 ? inLabel : outLabel;
         const fuzzyCat = fuzzyDir === 0 ? cat0 : cat1;
         const noMatchCat = noMatchDir === 0 ? cat0 : cat1;
-        summary = warnMsg(
+        summary = info(
           `CSV origin label mismatch for ${routeShortName}: ` +
           `dir=${fuzzyDir} fuzzy-matched: catalog="${fuzzyCat.name}" (from ${fuzzyCat.source}) ≈ csv="${fuzzyLabel}". ` +
           `dir=${noMatchDir} doesn't match: catalog="${noMatchCat.name}" (from ${noMatchCat.source}) vs csv="${noMatchLabel}". ` +
@@ -379,6 +388,7 @@ export function reconcileTripsAndStopTimes(input) {
         const swapMeta = { route: routeShortName, directionReversed: true };
         if (swapBothExact) {
           tier = 'swap-exact-both';
+          tierMatched = true;
           summary = info(
             `CSV direction reversed for ${routeShortName}: ` +
             `csv col 0 origin "${inLabel}" matches catalog dir 1 origin "${cat1.name}" (from ${cat1.source}); ` +
@@ -388,6 +398,7 @@ export function reconcileTripsAndStopTimes(input) {
           );
         } else if (swapBothFuzzy) {
           tier = 'swap-fuzzy-both';
+          tierMatched = true;
           summary = warnMsg(
             `CSV direction reversed (fuzzy) for ${routeShortName}: ` +
             `csv col 0 origin "${inLabel}" ≈ catalog dir 1 origin "${cat1.name}" (from ${cat1.source}); ` +
@@ -400,6 +411,7 @@ export function reconcileTripsAndStopTimes(input) {
           // than no-match (which gives us nothing) so we use the swap
           // and warn loudly about the asymmetry.
           tier = 'swap-partial';
+          tierMatched = true;
           const exactDir = swap0Exact ? 0 : (swap1Exact ? 1 : null);
           const noMatchDir = exactDir === 0 ? 1 : 0;
           summary = warnMsg(
@@ -420,7 +432,7 @@ export function reconcileTripsAndStopTimes(input) {
           directionReversed = false;
         }
       }
-      if (!summary) {
+      if (!tierMatched) {
         tier = 'no-match';
         summary = warnMsg(
           `CSV origin labels DO NOT MATCH catalog for ${routeShortName}: ` +
