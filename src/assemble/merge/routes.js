@@ -28,6 +28,49 @@ import { info } from '../../lib/log-severity.js';
 import { canonicalShortName } from '../../sources/ctp-csv/shortname-aliases.js';
 
 /**
+ * Normalize a color value to the GTFS-spec `Color` type: six-digit hex,
+ * uppercased, no leading `#`. Accepts:
+ *   - `'#abc'`  / `'abc'`     → `'AABBCC'` (CSS 3-char shorthand expanded)
+ *   - `'#abcdef'` / `'abcdef'` → `'ABCDEF'`
+ *   - empty / nullish / malformed → `''` (caller decides the fallback)
+ *
+ * Per https://gtfs.org/documentation/schedule/reference/#field-types
+ * a `Color` MUST be six hex digits with no `#`. Tranzy occasionally
+ * returns CSS 3-char shorthand (e.g. `'000'` for black on ~80 routes),
+ * which is spec-violating; we expand rather than pass it through.
+ */
+function normalizeColor(raw) {
+  let c = (raw ?? '').toString().replace(/^#?/, '').toUpperCase();
+  if (c.length === 3 && /^[0-9A-F]{3}$/.test(c)) {
+    c = c[0] + c[0] + c[1] + c[1] + c[2] + c[2];
+  }
+  return /^[0-9A-F]{6}$/.test(c) ? c : '';
+}
+
+/**
+ * Pick a contrasting text color (`'FFFFFF'` or `'000000'`) for a 6-char
+ * hex background. Used as a producer-side fallback when no source
+ * supplies `route_text_color` — the GTFS spec requires producers to
+ * ensure "sufficient contrast between route_color and route_text_color"
+ * (see https://gtfs.org/documentation/schedule/reference/#routestxt).
+ *
+ * Note: the spec's *consumer-side* default for empty `route_text_color`
+ * is `'000000'` (black). Defaulting unconditionally to black would
+ * produce black-on-black for the many Tranzy routes with dark
+ * `route_color` (e.g. `'000000'`, `'002FFF'`). Computing contrast at
+ * publish time honors the producer-side contrast requirement.
+ */
+function contrastingTextColor(bg) {
+  if (!/^[0-9A-F]{6}$/.test(bg)) return 'FFFFFF';
+  const r = parseInt(bg.slice(0, 2), 16);
+  const g = parseInt(bg.slice(2, 4), 16);
+  const b = parseInt(bg.slice(4, 6), 16);
+  // sRGB-weighted luminance (approximation); same threshold neary uses.
+  const L = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+  return L > 0.6 ? '000000' : 'FFFFFF';
+}
+
+/**
  * @param {{
  *   seed: { routes: Array<{routeId, shortName, longName, type, color}>, agencyTxt: string },
  *   tranzy: { routes: any[] } | null,
@@ -65,15 +108,17 @@ export function reconcileRoutes({ seed, tranzy, warnings }) {
       if (byRouteId.has(id)) continue;
       const shortName = (r.route_short_name ?? '').toString().trim();
       const canonical = canonicalShortName(shortName);
-      const color = (r.route_color ?? '').toString().replace(/^#?/, '').toUpperCase();
       const row = {
         route_id: id,
         agency_id: '2', // CTP Cluj-Napoca
         route_short_name: shortName,
         route_long_name: r.route_long_name ?? '',
-        route_type: r.route_type ? String(r.route_type) : '3',
-        route_color: color,
-        route_text_color: (r.route_text_color ?? '').toString().replace(/^#?/, '').toUpperCase(),
+        // `?? '3'` not `?` — the GTFS enum 0 (tram) is a valid value that
+        // `?` would treat as missing and demote to bus. Same applies to
+        // the Transitous-only branch below.
+        route_type: String(r.route_type ?? '3'),
+        route_color: normalizeColor(r.route_color),
+        route_text_color: normalizeColor(r.route_text_color),
         route_desc: r.route_desc ?? '',
       };
       byRouteId.set(id, row);
@@ -87,8 +132,8 @@ export function reconcileRoutes({ seed, tranzy, warnings }) {
   // Transitous route, if we already added the matching Tranzy row by
   // canonical short_name, swap the published route_id to Transitous's
   // value so downstream apps (neary catalog, etc.) keep their
-  // references. Also fill in any fields Tranzy left empty
-  // (route_type, etc.).
+  // references. Tranzy stays authoritative for content (route_type,
+  // colors, names); Transitous only fills fields Tranzy left empty.
   let tranzyUpgradedToTransitousId = 0;
   let transitousOnlyAdded = 0;
   for (const r of seed.routes) {
@@ -107,9 +152,14 @@ export function reconcileRoutes({ seed, tranzy, warnings }) {
         byRouteId.set(newId, tranzyRow);
         tranzyUpgradedToTransitousId++;
       }
-      if (!tranzyRow.route_type && r.type) tranzyRow.route_type = String(r.type);
-      if (!tranzyRow.route_color && r.color) {
-        tranzyRow.route_color = r.color.replace(/^#?/, '').toUpperCase();
+      if (tranzyRow.route_type == null && r.type != null) tranzyRow.route_type = String(r.type);
+      if (!tranzyRow.route_color) {
+        const seedColor = normalizeColor(r.color);
+        if (seedColor) tranzyRow.route_color = seedColor;
+      }
+      if (!tranzyRow.route_text_color) {
+        const seedText = normalizeColor(r.textColor);
+        if (seedText) tranzyRow.route_text_color = seedText;
       }
       if (!tranzyRow.route_long_name && r.longName) tranzyRow.route_long_name = r.longName;
       // Remember the match so a Transitous-only fallback (no Tranzy)
@@ -124,15 +174,35 @@ export function reconcileRoutes({ seed, tranzy, warnings }) {
       agency_id: '2',
       route_short_name: shortName,
       route_long_name: r.longName ?? '',
-      route_type: r.type ? String(r.type) : '3',
-      route_color: (r.color ?? '').replace(/^#?/, '').toUpperCase(),
-      route_text_color: '',
+      // `?? '3'` not `?` — see Step 1 comment; type=0 is valid.
+      route_type: String(r.type ?? '3'),
+      route_color: normalizeColor(r.color),
+      route_text_color: normalizeColor(r.textColor),
       route_desc: '',
     };
     byRouteId.set(row.route_id, row);
     routes.push(row);
     if (canonical) seedByCanonical.set(canonical, row);
     transitousOnlyAdded++;
+  }
+
+  // ── Step 3: Producer-side defaults for the color pair, applied to
+  // every row before serialization. Per the GTFS spec
+  // (https://gtfs.org/documentation/schedule/reference/#routestxt):
+  //   - route_color defaults to FFFFFF (white) when omitted.
+  //   - route_text_color defaults to 000000 (black) when omitted.
+  //   - The producer SHOULD ensure sufficient contrast between them.
+  //
+  // Tranzy never returns route_text_color, so most Tranzy-only rows
+  // would ship with the field empty and consumers would resolve to
+  // black per spec — producing black-on-black plates for the many
+  // Tranzy routes with dark route_color. We pick a contrasting text
+  // color (white on dark, black on light) when text_color is empty
+  // and route_color is set, satisfying the contrast requirement
+  // without overriding any explicit producer-supplied value.
+  for (const row of routes) {
+    if (!row.route_color) row.route_color = 'FFFFFF';
+    if (!row.route_text_color) row.route_text_color = contrastingTextColor(row.route_color);
   }
 
   // Build-log summary. One line per category — the per-row detail is

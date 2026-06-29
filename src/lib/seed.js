@@ -109,6 +109,7 @@ export async function loadSeed(source, opts = {}) {
     longName: r.route_long_name,
     type: r.route_type,
     color: r.route_color || '',
+    textColor: r.route_text_color || '',
   }));
 
   const stops = stopsRows.map((s) => ({
