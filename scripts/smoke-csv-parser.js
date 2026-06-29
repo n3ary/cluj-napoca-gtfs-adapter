@@ -199,12 +199,12 @@ const missingThresholdPct = Number(env.SMOKE_MISSING_THRESHOLD_PCT ?? 10); // % 
   console.log(`  Network error:         ${totalNetworkError}    (timeout/connect refused)`);
   console.log('');
   console.log('Route coverage:');
-  console.log(`  Routes with ≥1 CSV:   ${stats.size - routesWithNoCsv.length}`);
-  console.log(`  Routes with no CSV:    ${routesWithNoCsv.length}    (no service day fetched successfully)`);
   if (routesWithNoCsv.length > 0 && routesWithNoCsv.length <= 20) {
-    console.log(`    → ${routesWithNoCsv.join(', ')}`);
+    console.log(`  ${stats.size - routesWithNoCsv.length} of ${stats.size} routes have ≥1 CSV. No CSV at all: ${routesWithNoCsv.join(', ')} (CTP doesn't publish).`);
   } else if (routesWithNoCsv.length > 20) {
-    console.log(`    → ${routesWithNoCsv.slice(0, 20).join(', ')}, ... and ${routesWithNoCsv.length - 20} more`);
+    console.log(`  ${stats.size - routesWithNoCsv.length} of ${stats.size} routes have ≥1 CSV. No CSV at all: ${routesWithNoCsv.slice(0, 20).join(', ')}, ... and ${routesWithNoCsv.length - 20} more.`);
+  } else {
+    console.log(`  ${stats.size} of ${stats.size} routes have ≥1 CSV (all routes covered).`);
   }
   console.log('');
   console.log(`Frequency annotations found:   ${totalFreq}`);

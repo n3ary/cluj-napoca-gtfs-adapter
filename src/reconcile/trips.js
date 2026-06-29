@@ -211,6 +211,9 @@ export function reconcileTripsAndStopTimes(input) {
 
     // Compute the tier + emit ONE summary warning per route (not per
     // service-day × direction, which would triple-print for LV+S+D).
+    // The warning tells you WHAT the catalog said (pattern first stop
+    // + which source it came from) so you can decide whether to
+    // trust the CSV column-convention assignment.
     if (perDirMatch.length > 0) {
       const dir0 = perDirMatch.find((m) => m.dir === 0);
       const dir1 = perDirMatch.find((m) => m.dir === 1);
@@ -220,6 +223,18 @@ export function reconcileTripsAndStopTimes(input) {
       const anyExact = d0.exact || d1.exact;
       const bothFuzzy = d0.fuzzy && d1.fuzzy;
       const anyFuzzy = d0.fuzzy || d1.fuzzy;
+      // Capture catalog first-stop name + source for each dir so the
+      // warning can show what we expected, not just what the CSV said.
+      const catalogInfo = (dir) => {
+        const p = plans.get(dir);
+        if (!p || !p.pattern) return { name: '(no pattern)', source: '—' };
+        return {
+          name: p.orderedStops[0]?.name ?? '(unknown)',
+          source: p.pattern.source ?? (input.tranzyPatterns.get(`${routeId}|${dir}`) ? 'tranzy' : 'seed'),
+        };
+      };
+      const cat0 = catalogInfo(0);
+      const cat1 = catalogInfo(1);
       let tier;
       let summary;
       if (bothExact) {
@@ -231,14 +246,19 @@ export function reconcileTripsAndStopTimes(input) {
         const fuzzyDir = exactDir === 0 ? 1 : 0;
         const exactLabel = exactDir === 0 ? inLabel : outLabel;
         const fuzzyLabel = fuzzyDir === 0 ? inLabel : outLabel;
+        const exactCat = exactDir === 0 ? cat0 : cat1;
+        const fuzzyCat = fuzzyDir === 0 ? cat0 : cat1;
         summary =
-          `CSV origin label partial match for ${routeShortName}: dir=${exactDir} exactly matches "${exactLabel}", ` +
-          `dir=${fuzzyDir} label "${fuzzyLabel}" is fuzzy/no-match. Trusting column convention for the unmatched direction.`;
+          `CSV origin label partial match for ${routeShortName}: ` +
+          `dir=${exactDir} matches: catalog="${exactCat.name}" (from ${exactCat.source}) == csv="${exactLabel}". ` +
+          `dir=${fuzzyDir} mismatches: catalog="${fuzzyCat.name}" (from ${fuzzyCat.source}) vs csv="${fuzzyLabel}". ` +
+          `Trusting column convention for the unmatched direction.`;
       } else if (bothFuzzy) {
         tier = 'fuzzy-both';
         summary =
           `CSV origin labels fuzzy-matched for ${routeShortName}: ` +
-          `dir=0 expected near "${inLabel}", dir=1 expected near "${outLabel}". ` +
+          `dir=0 catalog="${cat0.name}" (from ${cat0.source}) ≈ csv="${inLabel}"; ` +
+          `dir=1 catalog="${cat1.name}" (from ${cat1.source}) ≈ csv="${outLabel}". ` +
           `Catalog and CSV use different precision/spelling for the same stops.`;
       } else if (anyFuzzy) {
         tier = 'fuzzy-one';
@@ -246,15 +266,19 @@ export function reconcileTripsAndStopTimes(input) {
         const noMatchDir = fuzzyDir === 0 ? 1 : 0;
         const fuzzyLabel = fuzzyDir === 0 ? inLabel : outLabel;
         const noMatchLabel = noMatchDir === 0 ? inLabel : outLabel;
+        const fuzzyCat = fuzzyDir === 0 ? cat0 : cat1;
+        const noMatchCat = noMatchDir === 0 ? cat0 : cat1;
         summary =
-          `CSV origin label mismatch for ${routeShortName}: dir=${fuzzyDir} fuzzy-matched "${fuzzyLabel}", ` +
-          `dir=${noMatchDir} label "${noMatchLabel}" doesn't match catalog. ` +
+          `CSV origin label mismatch for ${routeShortName}: ` +
+          `dir=${fuzzyDir} fuzzy-matched: catalog="${fuzzyCat.name}" (from ${fuzzyCat.source}) ≈ csv="${fuzzyLabel}". ` +
+          `dir=${noMatchDir} doesn't match: catalog="${noMatchCat.name}" (from ${noMatchCat.source}) vs csv="${noMatchLabel}". ` +
           `Trusting column convention; headsign for the unmatched direction falls back to route_long_name.`;
       } else {
         tier = 'no-match';
         summary =
           `CSV origin labels DO NOT MATCH catalog for ${routeShortName}: ` +
-          `neither "${inLabel}" nor "${outLabel}" matches any pattern's first stop. ` +
+          `dir=0 catalog="${cat0.name}" (from ${cat0.source}) vs csv="${inLabel}"; ` +
+          `dir=1 catalog="${cat1.name}" (from ${cat1.source}) vs csv="${outLabel}". ` +
           `Operator may have renamed or removed these terminals; CSV trip times are still used but ` +
           `no headsign is derived from CSV terminal names.`;
       }
