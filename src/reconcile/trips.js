@@ -229,6 +229,8 @@ function findRouteByShortName(routesByRouteId, shortName) {
  * @param {string} depTime  "HH:MM" or "HH:MM:SS" or "HH+24:MM"
  */
 export function makeTripId(routeId, dir, serviceId, depTime) {
+  // depTime is "HH:MM" or "HH:MM:SS" (possibly "HH+24:MM" from post-midnight
+  // wrap). Strip colons; strip the "+24" infix so 25:30 doesn't double up.
   const hhmm = depTime.replace(':', '').replace('+24', '');
   return `${routeId}_${dir}_${serviceId}_${hhmm}`;
 }
@@ -296,7 +298,13 @@ export function stopTimesToTxt(stopTimeRows) {
       '', // stop_headsign
       '', '', '', '',
       csvField(s.shape_dist_traveled),
-      '', // timepoint
+      // timepoint: 0 = approximate/interpolated. Our per-stop arrival
+      // and departure times come from computeStopTimes() which projects
+      // the CSV's origin departure across the shape using peak/offpeak/
+      // night speed buckets — they're synthesized, not authoritative.
+      // Per GTFS spec, this is the canonical use case for timepoint=0.
+      // See https://gtfs.org/schedule/reference/#stop_timestxt
+      '0',
     ].join(','));
   }
   return lines.join('\n') + '\n';

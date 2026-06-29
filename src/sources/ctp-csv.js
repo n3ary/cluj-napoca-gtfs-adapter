@@ -46,6 +46,9 @@ const DEFAULT_SERVICE_ID_MAP = { lv: 'LV', s: 'S', d: 'D' };
  *     dir0: { ranges: Array<{start: string, end: string}>, headways: Array<{minSec: number, maxSec: number|null, avgSec: number}> },
  *     dir1: { ranges: Array<{start: string, end: string}>, headways: Array<{minSec: number, maxSec: number|null, avgSec: number}> },
  *   },
+ *   suspended: Array<{col: number, reason: string}>,
+ *   annotations: Array<{col: number, value: string, time: string, annotation: string}>,
+ *   suspendedAllCells: boolean,
  *   warnings: Array<{row: number, col: number, value: string, reason: string}>,
  * }} CtpCsvSchedule
  */
@@ -73,6 +76,8 @@ export function parseCtpCsv(text) {
   const warnings = [];
   /** @type {Array<{col: number, reason: string}>} */
   const suspended = [];
+  /** @type {Array<{col: number, value: string, time: string, annotation: string}>} */
+  const annotations = [];
   let suspendedAllCells = false;
 
   for (let i = 5; i < lines.length; i++) {
@@ -83,6 +88,12 @@ export function parseCtpCsv(text) {
       const cls = classifyCell(cell);
       if (cls.type === 'time') {
         departures[colKey].push(cls.value);
+        // Surface operator-specific annotations (`*`/`**`) for build-log
+        // visibility. The trip is still emitted — see classifyCell comment
+        // for why we keep these runs in the schedule.
+        if (cls.annotation) {
+          annotations.push({ col: colIdx, value: cell, time: cls.value, annotation: cls.annotation });
+        }
       } else if (cls.type === 'range') {
         frequencyAnnotations[colKey].ranges.push({ start: cls.start, end: cls.end });
       } else if (cls.type === 'headway') {
@@ -113,7 +124,7 @@ export function parseCtpCsv(text) {
     departures.dir0.length + departures.dir1.length +
     frequencyAnnotations.dir0.ranges.length + frequencyAnnotations.dir0.headways.length +
     frequencyAnnotations.dir1.ranges.length + frequencyAnnotations.dir1.headways.length +
-    suspended.length;
+    suspended.length + annotations.length;
   if (totalNonEmpty > 0 && suspended.length === totalNonEmpty) {
     suspendedAllCells = true;
   }
@@ -123,6 +134,7 @@ export function parseCtpCsv(text) {
     inStopName, outStopName,
     departures, frequencyAnnotations,
     suspended,
+    annotations,
     suspendedAllCells,
     warnings,
   };
@@ -131,13 +143,38 @@ export function parseCtpCsv(text) {
 /**
  * Classify a single CSV cell value.
  * @param {string} value
- * @returns {{type: 'time', value: string}
+ * @returns {{type: 'time', value: string, annotation?: string}
  *           | {type: 'range', start: string, end: string}
  *           | {type: 'headway', minSec: number, maxSec: number|null, avgSec: number}
  *           | {type: 'suspended', reason: string}
  *           | {type: 'unknown'}}
  */
 export function classifyCell(value) {
+  // Asterisk annotations on times: `*HH:MM`, `HH:MM*`, `HH:MM**`. CTP
+  // uses these as route-specific annotations whose meaning is documented
+  // per-line on the HTML legend page — verified examples (2026-06-29):
+  //   M23 LV: `*04:40`, `*22:30`         → shared-run with M81 (the bus
+  //                                        at M23's terminal is registered
+  //                                        as M81, not M23)
+  //   M23 S:  `*22:25`, `22:50*`         → shared-run with M22
+  //   M39 S:  `*07:25`, `*14:30`         → trip extends past terminus
+  //                                        to Sânmartin (M39 stops earlier)
+  //          `07:55**`                    → trip skips the Cluj Due segment
+  //
+  // We keep these trips in the schedule — they're part of the operator's
+  // published timetable, so passengers see them as scheduled runs. In the
+  // neary PWA the live GPS lookup simply won't match (the physical vehicle
+  // is registered under a different route_id), which is fine: users see
+  // the scheduled time and the "no live GPS" indicator. The annotation is
+  // preserved on the returned object so the parser can surface it in the
+  // build log without polluting the smoke test's unrecognized-cell count.
+  const annMatch = value.toString().match(/^\*+|\*+$/g);
+  if (annMatch) {
+    const stripped = value.toString().replace(/^\*+|\*+$/g, '');
+    if (/^\d{1,2}:\d{2}$/.test(stripped)) {
+      return { type: 'time', value: stripped, annotation: annMatch.join('') };
+    }
+  }
   // Specific time: HH:MM
   if (/^\d{1,2}:\d{2}$/.test(value)) {
     return { type: 'time', value };

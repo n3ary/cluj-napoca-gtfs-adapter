@@ -107,7 +107,17 @@ function normalizeStopTimes(input) {
 
 /**
  * Resolve a single (route_id, direction_id) pattern using the
- * seed + Tranzy priority order.
+ * Tranzy → seed priority order.
+ *
+ * Why Tranzy first: Cluj-Napoca city hall promotes Tranzy as the
+ * authoritative live source for the network, so Tranzy is more
+ * up-to-date (per-direction shapes, recent route additions). When a
+ * route exists in both, Tranzy's pattern is the live truth.
+ *
+ * The seed (Transitous) is the fallback when Tranzy is missing the
+ * route or direction. This is what fixed neary-gtfs#13 (25N dir=1
+ * missing from seed) and #15 (M26 dir=1 missing from seed) — both
+ * Tranzy-only directions.
  *
  * @param {string} routeId
  * @param {number} directionId
@@ -120,13 +130,13 @@ function normalizeStopTimes(input) {
  */
 export function resolvePattern(routeId, directionId, sources) {
   const key = `${routeId}|${directionId}`;
-  const seed = sources.seedPatterns.get(key);
-  if (seed && seed.stops.length > 0) {
-    return { stops: seed.stops, shapeId: seed.shapeId, headsign: seed.headsign, source: 'seed' };
-  }
   const tranzy = sources.tranzyPatterns.get(key);
   if (tranzy && tranzy.stops.length > 0) {
     return { stops: tranzy.stops, shapeId: tranzy.shapeId, headsign: tranzy.headsign, source: 'tranzy' };
+  }
+  const seed = sources.seedPatterns.get(key);
+  if (seed && seed.stops.length > 0) {
+    return { stops: seed.stops, shapeId: seed.shapeId, headsign: seed.headsign, source: 'seed' };
   }
   return null;
 }
