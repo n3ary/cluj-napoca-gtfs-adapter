@@ -71,6 +71,9 @@ export function parseCtpCsv(text) {
   };
   /** @type {Array<{row: number, col: number, value: string, reason: string}>} */
   const warnings = [];
+  /** @type {Array<{col: number, reason: string}>} */
+  const suspended = [];
+  let suspendedAllCells = false;
 
   for (let i = 5; i < lines.length; i++) {
     const parts = lines[i].split(',').map((p) => p.trim());
@@ -88,6 +91,8 @@ export function parseCtpCsv(text) {
           maxSec: cls.maxSec,
           avgSec: cls.avgSec,
         });
+      } else if (cls.type === 'suspended') {
+        suspended.push({ col: colIdx, reason: cls.reason });
       } else {
         warnings.push({
           row: i,
@@ -100,9 +105,26 @@ export function parseCtpCsv(text) {
   }
   fixPostMidnight(departures.dir0);
   fixPostMidnight(departures.dir1);
+
+  // If EVERY non-empty cell was suspended, the route doesn't run at all
+  // that service day. Flag it so downstream code can skip without
+  // emitting "0 trips" warnings.
+  const totalNonEmpty =
+    departures.dir0.length + departures.dir1.length +
+    frequencyAnnotations.dir0.ranges.length + frequencyAnnotations.dir0.headways.length +
+    frequencyAnnotations.dir1.ranges.length + frequencyAnnotations.dir1.headways.length +
+    suspended.length;
+  if (totalNonEmpty > 0 && suspended.length === totalNonEmpty) {
+    suspendedAllCells = true;
+  }
+
   return {
     routeLongName, serviceName, serviceStart,
-    inStopName, outStopName, departures, frequencyAnnotations, warnings,
+    inStopName, outStopName,
+    departures, frequencyAnnotations,
+    suspended,
+    suspendedAllCells,
+    warnings,
   };
 }
 
@@ -112,6 +134,7 @@ export function parseCtpCsv(text) {
  * @returns {{type: 'time', value: string}
  *           | {type: 'range', start: string, end: string}
  *           | {type: 'headway', minSec: number, maxSec: number|null, avgSec: number}
+ *           | {type: 'suspended', reason: string}
  *           | {type: 'unknown'}}
  */
 export function classifyCell(value) {
@@ -144,6 +167,16 @@ export function classifyCell(value) {
     if (lo <= 120 && hi <= 120 && lo < hi) {
       return { type: 'headway', minSec: lo * 60, maxSec: hi * 60, avgSec: Math.round((lo + hi) / 2 * 60) };
     }
+  }
+  // Suspended / not running — Romanian operators use various markers. The
+  // CSV publishes these as cell content when a route (or direction) doesn't
+  // run that service day. Per neary-gtfs#1 taxonomy: school transport
+  // (off-season), night routes (different naming), suspended routes
+  // (CTP-published), and seasonal/event routes all publish cells like
+  // these. Treat as a known skip — emit a soft warning, NOT a parse error.
+  const trimmed = value.toString().trim();
+  if (/^(nu circul[ăa]|in lucru|suspendat|suspended|nu functioneaza|nu merge)$/i.test(trimmed)) {
+    return { type: 'suspended', reason: trimmed };
   }
   return { type: 'unknown' };
 }
