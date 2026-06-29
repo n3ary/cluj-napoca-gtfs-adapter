@@ -14,6 +14,7 @@
 
 import { USER_AGENT } from '../lib/seed.js';
 import { warnMsg } from '../lib/log-severity.js';
+import { readCsvBody, readStatusManifest } from '../lib/build-input.js';
 
 const DEFAULT_BASE_URL = 'https://ctpcj.ro/orare/csv/orar_{routeShortName}_{serviceId}.csv';
 
@@ -291,14 +292,83 @@ function fixPostMidnight(times) {
 /**
  * Fetch + parse one CSV.
  *
+ * The pipeline is split into two phases:
+ *   - source: 'upstream' (default) — fetches from CTP directly.
+ *     Used by reconcile / dev workflows.
+ *   - source: 'disk' — reads from the `.build-input/` directory
+ *     populated by a previous smoke run. Used by the build command
+ *     in CI: smoke fetches once, build reads from disk. NO double
+ *     fetch.
+ *
+ * If `source: 'disk'` is requested but the manifest doesn't exist,
+ * the function throws — operator forgot to run smoke first. The
+ * manifest is the source of truth for which CSVs smoke attempted
+ * and which succeeded; without it we can't tell a legit 404 from a
+ * smoke-wasn't-run bug.
+ *
  * @param {string} routeShortName
  * @param {string} serviceKey
  * @param {object} [opts]
+ * @param {'upstream' | 'disk'} [opts.source]
  * @param {string} [opts.baseUrl]
  * @param {typeof fetch} [opts.fetch]
  * @returns {Promise<CtpCsvSchedule | null>}
  */
 export async function fetchCtpCsv(routeShortName, serviceKey, opts = {}) {
+  const source = opts.source ?? 'upstream';
+  if (source === 'disk') {
+    return fetchCtpCsvFromDisk(routeShortName, serviceKey);
+  }
+  return fetchCtpCsvFromUpstream(routeShortName, serviceKey, opts);
+}
+
+/**
+ * Read a CSV body from the .build-input/ directory populated by smoke.
+ * Throws if the manifest is missing — that's an operator error, not a
+ * catalog gap.
+ *
+ * @param {string} routeShortName
+ * @param {string} serviceKey
+ * @returns {CtpCsvSchedule | null}
+ */
+function fetchCtpCsvFromDisk(routeShortName, serviceKey) {
+  const manifest = readStatusManifest();
+  if (!manifest) {
+    throw new Error(
+      `[ctp-csv] source='disk' but no .build-input/csv-status.json found. ` +
+      `Run scripts/smoke-csv-parser.js first to populate the build-input directory.`,
+    );
+  }
+  const entry = manifest.entries.find((e) => e.route === routeShortName && e.svc === serviceKey);
+  if (!entry) {
+    throw new Error(
+      `[ctp-csv] ${routeShortName}_${serviceKey} not found in smoke manifest. ` +
+      `Smoke may have run against a different route list — re-run it.`,
+    );
+  }
+  if (entry.status !== 'ok') {
+    // 404 / WAF / HTTP / network — smoke would have failed loud on
+    // infra, so reaching here implies a legit catalog gap (status=not-found).
+    // Return null and let downstream use Tranzy fallback.
+    return null;
+  }
+  const body = readCsvBody(routeShortName, serviceKey);
+  if (body == null) {
+    throw new Error(
+      `[ctp-csv] ${routeShortName}_${serviceKey} marked ok in manifest but body file is missing. ` +
+      `Re-run smoke.`,
+    );
+  }
+  return parseCtpCsv(body);
+}
+
+/**
+ * @param {string} routeShortName
+ * @param {string} serviceKey
+ * @param {object} opts
+ * @returns {Promise<CtpCsvSchedule | null>}
+ */
+async function fetchCtpCsvFromUpstream(routeShortName, serviceKey, opts) {
   const baseUrl = opts.baseUrl ?? DEFAULT_BASE_URL;
   const fetchImpl = opts.fetch ?? globalThis.fetch;
   // CTP's URL convention strips whitespace from the route_short_name

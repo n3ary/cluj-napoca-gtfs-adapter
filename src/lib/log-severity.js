@@ -60,18 +60,24 @@ const GHA = {
  * the API stays consistent — never construct `{severity, message}`
  * literals inline.
  *
+ * Pass an optional `meta` object to attach side-channel data
+ * (e.g. `{ route: '57', directionReversed: true }`). Downstream tools
+ * can `warnings.filter(w => w.meta?.directionReversed)` to grep the
+ * side-channel without parsing message text.
+ *
  * @param {'info' | 'warn' | 'error'} severity
  * @param {string} message
- * @returns {{severity: string, message: string}}
+ * @param {Record<string, unknown> | null} [meta]
+ * @returns {{severity: string, message: string, meta?: Record<string, unknown>}}
  */
-export function warn(severity, message) {
-  return { severity, message };
+export function warn(severity, message, meta = null) {
+  return meta == null ? { severity, message } : { severity, message, meta };
 }
 
 /** Convenience shortcuts — slightly more readable than `warn(SEVERITY.X, ...)`. */
-export const info = (message) => warn(SEVERITY.INFO, message);
-export const warnMsg = (message) => warn(SEVERITY.WARN, message);
-export const errorMsg = (message) => warn(SEVERITY.ERROR, message);
+export const info = (message, meta = null) => warn(SEVERITY.INFO, message, meta);
+export const warnMsg = (message, meta = null) => warn(SEVERITY.WARN, message, meta);
+export const errorMsg = (message, meta = null) => warn(SEVERITY.ERROR, message, meta);
 
 /**
  * Read the severity off a tagged warning. Replaces the old

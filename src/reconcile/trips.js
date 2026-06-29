@@ -103,7 +103,7 @@ export function reconcileTripsAndStopTimes(input) {
     //   - in_stop_name  = origin of col 0 buses  = first stop of dir 0
     //   - out_stop_name = origin of col 1 buses  = first stop of dir 1
     //
-    // Tiers (best → worst):
+    // Tiers (best → worst, same-direction match):
     //   1. exact-both : both directions exactly match. Silent.
     //   2. exact-one  : at least one exact, the other is fuzzy/no-match.
     //                   We know one direction's column is correct, so
@@ -118,6 +118,32 @@ export function reconcileTripsAndStopTimes(input) {
     //                   use the CSV (operator-published data wins for
     //                   trip times), but skip CSV labels as headsign
     //                   fallback since we can't trust them.
+    //
+    // Cross-direction tier (only triggered when same-direction tiers
+    // 1-4 fail):
+    //   5b. swap-detected : CSV's column-to-direction mapping is FLIPPED
+    //                     relative to the catalog. CSV col 0 ("in_stop")
+    //                     actually contains the origin of CATALOG dir 1
+    //                     buses, and CSV col 1 ("out_stop") actually
+    //                     contains the origin of CATALOG dir 0 buses.
+    //
+    //                     When detected, we emit trips with FLIPPED
+    //                     direction_id (csv col 0 → physical dir 1, csv
+    //                     col 1 → physical dir 0) so that each trip's
+    //                     first stop in its pattern matches the CSV's
+    //                     published origin label. The side-channel
+    //                     warning carries `directionReversed: true` in
+    //                     its meta so downstream consumers can flag the
+    //                     route as having a non-canonical direction
+    //                     mapping.
+    //
+    //                     Sub-tiers:
+    //                       - swap-exact-both : both cross-pairs exact
+    //                         (info — fully resolved)
+    //                       - swap-fuzzy-both : both cross-pairs fuzzy
+    //                         (warn — names differ in spelling)
+    //                       - swap-partial    : one cross-pair exact,
+    //                         the other fuzzy or no-match (warn)
     //
     // The tier is per-(route, dir) but we emit ONE summary warning
     // per route (not per service-day × per direction) so the build
@@ -206,12 +232,43 @@ export function reconcileTripsAndStopTimes(input) {
       plans.set(dir, { pattern, orderedStops, csvOriginTrustable, headsign, shape });
     }
 
+    // Cross-direction (swap) detection — only meaningful when BOTH dirs
+    // resolved a pattern (otherwise we have nothing to compare). Try
+    // matching CSV col 0 against catalog dir 1 origin, and CSV col 1
+    // against catalog dir 0 origin. If that pairing fits better than the
+    // same-direction pairing, the operator's CSV columns are flipped
+    // relative to the catalog.
+    const plan0 = plans.get(0);
+    const plan1 = plans.get(1);
+    // Side-channel flag — when true, the trip emission loop below flips
+    // which CSV column feeds which physical direction. Default false;
+    // set to true only when tier 5 swap detection fires.
+    let directionReversed = false;
+    const swapCandidate = !!(plan0 && plan0.orderedStops && plan1 && plan1.orderedStops);
+    /** @type {{swap0Exact: boolean, swap1Exact: boolean, swap0Fuzzy: boolean, swap1Fuzzy: boolean} | null} */
+    let swapTest = null;
+    if (swapCandidate) {
+      // CSV col 0 ↔ catalog dir 1
+      const swap0Expected = plan1.orderedStops[0]?.name ?? null;
+      const swap0Csv = inLabel;
+      const swap0Exact = swap0Expected && swap0Csv
+        ? swap0Expected.trim().toLowerCase() === swap0Csv.trim().toLowerCase()
+        : false;
+      const swap0Fuzzy = swap0Exact ? true : terminalNamesMatch(swap0Expected, swap0Csv);
+      // CSV col 1 ↔ catalog dir 0
+      const swap1Expected = plan0.orderedStops[0]?.name ?? null;
+      const swap1Csv = outLabel;
+      const swap1Exact = swap1Expected && swap1Csv
+        ? swap1Expected.trim().toLowerCase() === swap1Csv.trim().toLowerCase()
+        : false;
+      const swap1Fuzzy = swap1Exact ? true : terminalNamesMatch(swap1Expected, swap1Csv);
+      swapTest = { swap0Exact, swap1Exact, swap0Fuzzy, swap1Fuzzy };
+    }
+
     // Bucket the route by how many of its directions lack a pattern,
     // and which source(s) are missing. Used by the aggregate
     // summary at the end of the function — saves emitting one line
     // per (route, dir, service-day) which would be hundreds of lines.
-    const plan0 = plans.get(0);
-    const plan1 = plans.get(1);
     const dir0Missing = plan0 && plan0._bothMissing !== undefined;
     const dir1Missing = plan1 && plan1._bothMissing !== undefined;
     const d0TranzyMissing = !!(plan0 && plan0._tranzyMissing);
@@ -305,7 +362,65 @@ export function reconcileTripsAndStopTimes(input) {
           `dir=${noMatchDir} doesn't match: catalog="${noMatchCat.name}" (from ${noMatchCat.source}) vs csv="${noMatchLabel}". ` +
           `Trusting column convention; headsign for the unmatched direction falls back to route_long_name.`,
         );
-      } else {
+      } else if (swapTest) {
+        // Tier 5: same-direction matching all failed, but cross-direction
+        // (swap) matching works. The CSV's col 0/col 1 labels are
+        // flipped relative to the catalog. Emit trips with FLIPPED
+        // direction_id so each trip's first stop matches the CSV's
+        // published origin label.
+        directionReversed = true;
+        const s = swapTest;
+        const swap0Exact = s.swap0Exact, swap1Exact = s.swap1Exact;
+        const swap0Fuzzy = s.swap0Fuzzy, swap1Fuzzy = s.swap1Fuzzy;
+        const swapBothExact = swap0Exact && swap1Exact;
+        const swapBothFuzzy = swap0Fuzzy && swap1Fuzzy;
+        const swapAnyExact = swap0Exact || swap1Exact;
+        const swapAnyFuzzy = swap0Fuzzy || swap1Fuzzy;
+        const swapMeta = { route: routeShortName, directionReversed: true };
+        if (swapBothExact) {
+          tier = 'swap-exact-both';
+          summary = info(
+            `CSV direction reversed for ${routeShortName}: ` +
+            `csv col 0 origin "${inLabel}" matches catalog dir 1 origin "${cat1.name}" (from ${cat1.source}); ` +
+            `csv col 1 origin "${outLabel}" matches catalog dir 0 origin "${cat0.name}" (from ${cat0.source}). ` +
+            `CSV column-to-direction mapping is flipped relative to the catalog; trips emitted with direction_id swapped.`,
+            swapMeta,
+          );
+        } else if (swapBothFuzzy) {
+          tier = 'swap-fuzzy-both';
+          summary = warnMsg(
+            `CSV direction reversed (fuzzy) for ${routeShortName}: ` +
+            `csv col 0 origin "${inLabel}" ≈ catalog dir 1 origin "${cat1.name}" (from ${cat1.source}); ` +
+            `csv col 1 origin "${outLabel}" ≈ catalog dir 0 origin "${cat0.name}" (from ${cat0.source}). ` +
+            `Names differ in precision/spelling; CSV column-to-direction mapping is flipped relative to the catalog.`,
+            swapMeta,
+          );
+        } else if (swapAnyExact || swapAnyFuzzy) {
+          // Tier 5 partial — only one cross-pair matched. Still better
+          // than no-match (which gives us nothing) so we use the swap
+          // and warn loudly about the asymmetry.
+          tier = 'swap-partial';
+          const exactDir = swap0Exact ? 0 : (swap1Exact ? 1 : null);
+          const noMatchDir = exactDir === 0 ? 1 : 0;
+          summary = warnMsg(
+            `CSV direction reversed (partial) for ${routeShortName}: ` +
+            (exactDir === 0
+              ? `csv col 0 origin "${inLabel}" matches catalog dir 1 origin "${cat1.name}" (from ${cat1.source}); `
+              : `csv col 1 origin "${outLabel}" matches catalog dir 0 origin "${cat0.name}" (from ${cat0.source}); `) +
+            (exactDir === 0
+              ? `csv col 1 origin "${outLabel}" does NOT match catalog dir 0 origin "${cat0.name}" (from ${cat0.source}). `
+              : `csv col 0 origin "${inLabel}" does NOT match catalog dir 1 origin "${cat1.name}" (from ${cat1.source}). `) +
+            `Asymmetric — assuming operator swapped the columns but one terminal is renamed/missing. ` +
+            `Headsign for the unmatched direction falls back to catalog.`,
+            swapMeta,
+          );
+        } else {
+          // swapTest was non-null but every cross-pair failed to match.
+          // Fall through to no-match below by unsetting directionReversed.
+          directionReversed = false;
+        }
+      }
+      if (!summary) {
         tier = 'no-match';
         summary = warnMsg(
           `CSV origin labels DO NOT MATCH catalog for ${routeShortName}: ` +
@@ -318,6 +433,17 @@ export function reconcileTripsAndStopTimes(input) {
       if (summary) localWarnings.push(summary);
     }
 
+    // Tier 5's `directionReversed` flag is INFORMATIONAL ONLY — it
+    // carries the warning through the side-channel meta field but does
+    // NOT change trip emission. Direction_id in trips.txt is always
+    // the catalog (Tranzy) value: dir 0 trips use the catalog's dir 0
+    // pattern, dir 1 trips use the catalog's dir 1 pattern. Even when
+    // the operator's CSV columns are reversed relative to the catalog
+    // (which tier 5 flags), we keep Tranzy's direction_id mapping for
+    // downstream stability — consumers depend on Tranzy's id↔direction
+    // contract. The CSV times are mapped by column index (col 0 → dir 0,
+    // col 1 → dir 1); headsign still falls back to the catalog when
+    // the CSV origin labels don't match.
     for (const [serviceId, csv] of byService.entries()) {
       const dirs = [
         { dir: 0, departures: csv.departures.dir0 },

@@ -7,8 +7,8 @@ describe('parseCtpCsv', () => {
   it('parses a standard weekday CSV', () => {
     const result = parseCtpCsv(fixtures.csv['35'].LV);
     expect(result.routeLongName).toBe('Piata Garii - Cart. Zorilor');
-    expect(result.inStopName).toBe('Cart. Zorilor');
-    expect(result.outStopName).toBe('Piata Garii');
+    expect(result.inStopName).toBe('Piata Garii');
+    expect(result.outStopName).toBe('Cart. Zorilor');
     expect(result.departures.dir0).toEqual(['06:00', '06:30']);
     expect(result.departures.dir1).toEqual(['06:30', '07:00']);
     expect(result.warnings).toHaveLength(0);

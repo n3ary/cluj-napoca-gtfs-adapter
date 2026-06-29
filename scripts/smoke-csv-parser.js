@@ -30,13 +30,19 @@
  *   0  every CSV was parsed cleanly (no unrecognized cells)
  *   1  at least one unrecognized cell was found
  *   2  connectivity issue (Transitous seed or CSV host unreachable)
+ *   3  whole-line 404 — route(s) have ZERO CSV coverage
+ *
+ * Side effect: writes successful CSV bodies to .build-input/csv/ and a
+ * manifest to .build-input/csv-status.json. The build phase consumes
+ * both so it never re-fetches.
  */
 
 import { argv, env, exit } from 'node:process';
 
 import { loadTransitousSeed } from '../src/sources/transitous.js';
-import { parseCtpCsv, fetchCtpCsv, CSV_SERVICE_KEYS } from '../src/sources/ctp-csv.js';
+import { parseCtpCsv, buildCtpCsvUrl, CSV_SERVICE_KEYS } from '../src/sources/ctp-csv.js';
 import { USER_AGENT } from '../src/lib/seed.js';
+import { ensureBuildInputDirs, writeCsvBody, writeStatusManifest } from '../src/lib/build-input.js';
 
 const DEFAULT_TRANSITOUS_URL = 'https://api.transitous.org/gtfs/ro_Cluj-Napoca.gtfs.zip';
 const DEFAULT_CSV_BASE = 'https://ctpcj.ro/orare/csv/orar_{routeShortName}_{serviceId}.csv';
@@ -52,26 +58,32 @@ const WAF_HEADERS = {
   'Upgrade-Insecure-Requests': '1',
 };
 
+// --- Local log helpers (kept inline since this is a single-file script;
+// a shared logger module would be over-engineering for one consumer).
+const TAG = '[smoke:csv]';
+const pad = (s, n) => String(s).padEnd(n);
+const ghaError = (msg) => console.error(`::error::${TAG} ${msg}`);
+const die = (code, msg) => { console.error(TAG, msg); exit(code); };
+
 async function main() {
   const failOnInfra = env.SMOKE_ALLOW_INFRA_FAILURES !== '1'; // default ON — any non-404 miss is a signal
   const seedUrl = env.TRANSITOUS_SEED_URL || DEFAULT_TRANSITOUS_URL;
   const csvBase = env.CTP_CSV_BASE_URL || DEFAULT_CSV_BASE;
   const fetchImpl = globalThis.fetch;
 
-  console.log(`[smoke:csv] Transitous seed: ${seedUrl}`);
-  console.log(`[smoke:csv] CTP CSV base: ${csvBase}`);
-  console.log(`[smoke:csv] service keys: ${CSV_SERVICE_KEYS.join(', ')}`);
+  console.log(`${TAG} Transitous seed: ${seedUrl}`);
+  console.log(`${TAG} CTP CSV base: ${csvBase}`);
+  console.log(`${TAG} service keys: ${CSV_SERVICE_KEYS.join(', ')}`);
 
   let seed;
   try {
     seed = await loadTransitousSeed({ url: seedUrl });
   } catch (err) {
-    console.error(`[smoke:csv] FATAL: Transitous seed unreachable: ${err.message || err}`);
-    exit(2);
+    die(2, `FATAL: Transitous seed unreachable: ${err.message || err}`);
   }
 
   const routes = seed.routes;
-  console.log(`[smoke:csv] scraping ${routes.length} routes × ${CSV_SERVICE_KEYS.length} service keys = ${routes.length * CSV_SERVICE_KEYS.length} CSVs`);
+  console.log(`${TAG} scraping ${routes.length} routes × ${CSV_SERVICE_KEYS.length} service keys = ${routes.length * CSV_SERVICE_KEYS.length} CSVs`);
 
   /** @type {Map<string, {ok: number, missing: number, frequency: number, unknown: number, samples: Array<{route: string, value: string}>}>} */
   const stats = new Map();
@@ -89,6 +101,15 @@ async function main() {
   let unrecognizedCount = 0;
   let unrecognizedSamples = [];
 
+  // Manifest of every fetch attempt. Written to .build-input/csv-status.json
+  // at the end so the build phase can read CSVs from disk without re-fetching.
+  // Order: insertion order = task order, which is deterministic by route+svc.
+  /** @type {Array<{route: string, svc: string, status: 'ok' | 'not-found' | 'waf-blocked' | 'http-error' | 'network-error', httpStatus?: number}>} */
+  const manifestEntries = [];
+
+  // Ensure the build-input directory exists before any worker runs.
+  ensureBuildInputDirs();
+
   async function worker() {
     while (cursor < tasks.length) {
       const myIdx = cursor++;
@@ -98,13 +119,12 @@ async function main() {
         stats.set(key, { ok: 0, notFound: 0, wafBlocked: 0, httpError: 0, networkError: 0, frequency: 0, unknown: 0, samples: [] });
       }
       const stat = stats.get(key);
-// Build URL via the canonical `buildCtpCsvUrl` from src/sources/ctp-csv.js
-        // so URL-convention changes (e.g. CTP's no-space rule for "39 CREIC")
-        // don't need to land in three places. We fetch manually here
-        // (rather than calling fetchCtpCsv) so the smoke script can use
-        // its own headers + pass the raw body through to the parser.
-        const { buildCtpCsvUrl } = await import('../src/sources/ctp-csv.js');
-        const url = buildCtpCsvUrl(route.shortName, svcKey, csvBase);
+      // Build URL via the canonical `buildCtpCsvUrl` from src/sources/ctp-csv.js
+      // so URL-convention changes (e.g. CTP's no-space rule for "39 CREIC")
+      // don't need to land in three places. We fetch manually here
+      // (rather than calling fetchCtpCsv) so the smoke script can use
+      // its own headers + pass the raw body through to the parser.
+      const url = buildCtpCsvUrl(route.shortName, svcKey, csvBase);
       let res;
       try {
         res = await fetchImpl(url, {
@@ -115,18 +135,21 @@ async function main() {
         // Timeout / DNS / TCP refused — transient infrastructure issue,
         // distinct from "CTP doesn't publish this CSV" (which is 404).
         stat.networkError++;
+        manifestEntries.push({ route: route.shortName, svc: svcKey, status: 'network-error' });
         continue;
       }
       if (res.status === 404) {
         // 404 = CTP doesn't publish this CSV. Permanent catalog gap,
         // not a connectivity issue.
         stat.notFound++;
+        manifestEntries.push({ route: route.shortName, svc: svcKey, status: 'not-found', httpStatus: 404 });
         continue;
       }
       if (!res.ok) {
         // Other 4xx/5xx — server-side problem worth surfacing.
-        console.warn(`[smoke:csv] ${route.shortName}_${svcKey}: HTTP ${res.status}`);
+        console.warn(`${TAG} ${route.shortName}_${svcKey}: HTTP ${res.status}`);
         stat.httpError++;
+        manifestEntries.push({ route: route.shortName, svc: svcKey, status: 'http-error', httpStatus: res.status });
         continue;
       }
       const body = await res.text();
@@ -136,8 +159,14 @@ async function main() {
         // (server rejected us). Treated as transient — usually fixed
         // by retry with different headers or from a different IP.
         stat.wafBlocked++;
+        manifestEntries.push({ route: route.shortName, svc: svcKey, status: 'waf-blocked' });
         continue;
       }
+      // 200-ok with real CSV body — write to .build-input/csv/ for the
+      // build phase to consume. The build never re-fetches; it reads
+      // from disk using this manifest to know what's available.
+      writeCsvBody(route.shortName, svcKey, body);
+      manifestEntries.push({ route: route.shortName, svc: svcKey, status: 'ok', httpStatus: 200 });
       const parsed = parseCtpCsv(body);
       if (!parsed) {
         stat.missing++;
@@ -162,6 +191,12 @@ async function main() {
   }
 
   await Promise.all(Array.from({ length: Math.min(concurrency, tasks.length) }, worker));
+
+  // Persist the manifest so the build phase can read CSVs from disk.
+  // Atomic write — a build starting concurrently won't see a partial file.
+  writeStatusManifest({ entries: manifestEntries });
+  const okCount = manifestEntries.filter((e) => e.status === 'ok').length;
+  console.log(`${TAG} wrote manifest + ${okCount} CSV bodies to .build-input/`);
 
   // Report
   let totalOk = 0;
@@ -207,11 +242,11 @@ async function main() {
   console.log(`Total CSVs scraped:    ${totalFetches}`);
   console.log('');
   console.log('By fetch status:');
-  console.log(`  Successfully parsed:  ${totalOk}`);
-  console.log(`  Not found (404):      ${totalNotFound}    (CTP doesn't publish these CSVs)`);
-  console.log(`  WAF-blocked:           ${totalWafBlocked}    (200 OK but body wasn't CSV)`);
-  console.log(`  HTTP error:            ${totalHttpError}    (non-404 server error)`);
-  console.log(`  Network error:         ${totalNetworkError}    (timeout/connect refused)`);
+  console.log(`  ${pad('Successfully parsed:', 22)} ${totalOk}`);
+  console.log(`  ${pad('Not found (404):', 22)} ${pad(totalNotFound, 4)} (CTP doesn't publish these CSVs)`);
+  console.log(`  ${pad('WAF-blocked:', 22)} ${pad(totalWafBlocked, 4)} (200 OK but body wasn't CSV)`);
+  console.log(`  ${pad('HTTP error:', 22)} ${pad(totalHttpError, 4)} (non-404 server error)`);
+  console.log(`  ${pad('Network error:', 22)} ${pad(totalNetworkError, 4)} (timeout/connect refused)`);
   console.log('');
   console.log('404 classification:');
   if (expectedWeekend404s.length === 0 && wholeLine404s.length === 0) {
@@ -240,8 +275,8 @@ async function main() {
     console.log(`  ${stats.size} of ${stats.size} routes have ≥1 CSV (all routes covered).`);
   }
   console.log('');
-  console.log(`Frequency annotations found:   ${totalFreq}`);
-  console.log(`Unrecognized cells:            ${unrecognizedCount}`);
+  console.log(`${pad('Frequency annotations found:', 27)} ${totalFreq}`);
+  console.log(`${pad('Unrecognized cells:', 27)} ${unrecognizedCount}`);
 
   // Fail on whole-line 404s (real catalog gaps). Expected weekend /
   // service-day 404s are informational — routes that genuinely don't
@@ -253,8 +288,8 @@ async function main() {
   const allowWholeLine = env.SMOKE_ALLOW_WHOLE_LINE_404S === '1';
   if (!allowWholeLine && wholeLine404s.length > 0) {
     console.error('');
-    console.error('::error::[smoke:csv] FAIL — WHOLE-LINE 404(s) — route(s) have ZERO CSV coverage');
-    console.error(`[smoke:csv] ${wholeLine404s.length} WHOLE-LINE 404(s) — route(s) have ZERO CSV coverage:`);
+    ghaError('FAIL — WHOLE-LINE 404(s) — route(s) have ZERO CSV coverage');
+    console.error(`${TAG} ${wholeLine404s.length} WHOLE-LINE 404(s) — route(s) have ZERO CSV coverage:`);
     for (const d of wholeLine404s.slice(0, 20)) {
       console.error(`  - ${d.route}`);
     }
@@ -268,8 +303,8 @@ async function main() {
 
   if (unrecognizedCount > 0) {
     console.error('');
-    console.error('::error::[smoke:csv] FAIL — unrecognized CSV cell(s); extend classifyCell()');
-    console.error(`[smoke:csv] FAIL: ${unrecognizedCount} unrecognized cell(s) — extend classifyCell() in src/sources/ctp-csv.js`);
+    ghaError('FAIL — unrecognized CSV cell(s); extend classifyCell()');
+    console.error(`${TAG} FAIL: ${unrecognizedCount} unrecognized cell(s) — extend classifyCell() in src/sources/ctp-csv.js`);
     for (const s of unrecognizedSamples) {
       console.error(`  - ${s.route}: "${s.value}"`);
     }
@@ -296,8 +331,8 @@ async function main() {
   // real signal we care about.
   if (failOnInfra && totalInfra > 0) {
     console.error('');
-    console.error('::error::[smoke:csv] FAIL — infrastructure miss; build has no real signal');
-    console.error(`[smoke:csv] FAIL: ${totalInfra} CSV fetch(es) hit infrastructure issues — build has no real signal:`);
+    ghaError('FAIL — infrastructure miss; build has no real signal');
+    console.error(`${TAG} FAIL: ${totalInfra} CSV fetch(es) hit infrastructure issues — build has no real signal:`);
     if (totalWafBlocked > 0) console.error(`  - ${totalWafBlocked} WAF-blocked (got 200 OK but body wasn't CSV)`);
     if (totalHttpError > 0) console.error(`  - ${totalHttpError} HTTP error(s) (non-404 server error)`);
     if (totalNetworkError > 0) console.error(`  - ${totalNetworkError} network error(s) (timeout / connect refused)`);
@@ -308,17 +343,16 @@ async function main() {
   // Surface (but don't fail on) a high total-miss ratio — informational.
   if (totalMissing > 0) {
     console.log('');
-    console.log(`[smoke:csv] ${totalMissing} CSV fetch(es) returned 404 — these are catalog gaps (CTP doesn't publish them), not build failures.`);
+    console.log(`${TAG} ${totalMissing} CSV fetch(es) returned 404 — these are catalog gaps (CTP doesn't publish them), not build failures.`);
   }
 
   console.log('');
-  console.log('[smoke:csv] OK — every CSV was parsed cleanly. The #15 fix handles real-world annotations.');
+  console.log(`${TAG} OK — every CSV was parsed cleanly. The #15 fix handles real-world annotations.`);
   exit(0);
 }
 
 main().catch((err) => {
-  console.error(`[smoke:csv] unexpected error: ${err.stack || err.message || err}`);
-  exit(2);
+  die(2, `unexpected error: ${err.stack || err.message || err}`);
 });
 
 void argv;

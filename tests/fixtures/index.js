@@ -110,8 +110,8 @@ const TRANZY = {
 const CSV_35_LV = `route_long_name,"Piata Garii - Cart. Zorilor"
 service_name,"Luni - Vineri"
 service_start,"01.06.2026"
-in_stop_name,"Cart. Zorilor"
-out_stop_name,"Piata Garii"
+in_stop_name,"Piata Garii"
+out_stop_name,"Cart. Zorilor"
 06:00,06:30
 06:30,07:00
 `;
@@ -119,16 +119,16 @@ out_stop_name,"Piata Garii"
 const CSV_35_S = `route_long_name,"Piata Garii - Cart. Zorilor"
 service_name,"Sambata"
 service_start,"01.06.2026"
-in_stop_name,"Cart. Zorilor"
-out_stop_name,"Piata Garii"
+in_stop_name,"Piata Garii"
+out_stop_name,"Cart. Zorilor"
 07:00,07:30
 `;
 
 const CSV_35_D = `route_long_name,"Piata Garii - Cart. Zorilor"
 service_name,"Duminica"
 service_start,"01.06.2026"
-in_stop_name,"Cart. Zorilor"
-out_stop_name,"Piata Garii"
+in_stop_name,"Piata Garii"
+out_stop_name,"Cart. Zorilor"
 08:00,08:30
 `;
 

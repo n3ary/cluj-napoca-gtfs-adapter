@@ -4,6 +4,9 @@
  *
  * Subcommands:
  *   build           full pipeline → output/<name>.gtfs.zip
+ *                   By default reads CSVs from .build-input/csv/
+ *                   (populated by a prior smoke run). Use
+ *                   --from-upstream to fetch CSVs directly (legacy).
  *   validate [path] inspect an existing zip
  *   reconcile       dry-run: print what would be built, don't write
  *
@@ -28,13 +31,16 @@ import { loadTransitousSeed } from './sources/transitous.js';
 import { fetchAllCsvSchedules } from './sources/ctp-csv.js';
 import { reconcile } from './reconcile/index.js';
 import { writeGtfsZip, validateGtfsZip } from './gtfs.js';
+import { statusManifestExists } from './lib/build-input.js';
 
 const USAGE = `cluj-napoca-gtfs-adapter — build a reconciled GTFS feed for Cluj-Napoca
 
 Usage:
-  cluj-napoca-gtfs build           full pipeline → output/<name>.gtfs.zip
-  cluj-napoca-gtfs validate [path] validate a produced zip (default: latest in output dir)
-  cluj-napoca-gtfs reconcile       dry-run: print summary, don't write a zip
+  cluj-napoca-gtfs build [--from-upstream]   full pipeline → output/<name>.gtfs.zip
+                                              default: read CSVs from .build-input/csv/
+                                              --from-upstream: fetch CSVs from CTP directly
+  cluj-napoca-gtfs validate [path]            validate a produced zip (default: latest in output dir)
+  cluj-napoca-gtfs reconcile                  dry-run: print summary, don't write a zip
 
 Env (see .env.example):
   TRANZY_API_KEY         required
@@ -46,6 +52,24 @@ Env (see .env.example):
 `;
 
 async function cmdBuild() {
+  // CSV source resolution:
+  //   - default: 'disk' (read .build-input/csv/ populated by smoke)
+  //   - --from-upstream: fetch from CTP directly (legacy mode, useful
+  //                      for one-off local builds without running smoke)
+  // The 'disk' source requires .build-input/csv-status.json to exist;
+  // if it doesn't, error out with a hint to run smoke first.
+  const args = argv.slice(3);
+  const fromUpstream = args.includes('--from-upstream');
+  const csvSource = fromUpstream ? 'upstream' : 'disk';
+  if (csvSource === 'disk' && !statusManifestExists()) {
+    console.error(
+      'FATAL: .build-input/csv-status.json not found.\n' +
+      'Run scripts/smoke-csv-parser.js first to fetch CSVs, then re-run build.\n' +
+      'Or pass --from-upstream to fetch CSVs directly (legacy mode).',
+    );
+    exit(1);
+  }
+  console.log(`[build] CSV source: ${csvSource}`);
   const apiKey = env.TRANZY_API_KEY;
   if (!apiKey) {
     console.error('FATAL: TRANZY_API_KEY not set. Sign up at https://tranzy.dev/accounts and add it to .env');
@@ -84,6 +108,7 @@ async function cmdBuild() {
   // 3. Scrape CTP CSVs.
   console.log('[3/4] CTP CSV schedules');
   const csv = await fetchAllCsvSchedules(seed.routes, {
+    source: csvSource,
     baseUrl: env.CTP_CSV_BASE_URL || undefined,
     serviceKeys: (env.CTP_SERVICE_KEYS || 'lv,s,d').split(',').map((s) => s.trim()),
   });
