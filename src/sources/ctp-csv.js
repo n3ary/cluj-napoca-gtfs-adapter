@@ -16,6 +16,28 @@ import { USER_AGENT } from '../lib/seed.js';
 
 const DEFAULT_BASE_URL = 'https://ctpcj.ro/orare/csv/orar_{routeShortName}_{serviceId}.csv';
 
+/**
+ * Build the canonical CTP CSV URL for a (route_short_name, service_id)
+ * pair. Single source of truth — the smoke script and dump-404s.js
+ * both use this so URL-convention changes only need to land in one place.
+ *
+ * CTP's URL convention strips whitespace from route_short_name:
+ *   - `39 CREIC` (the Transitous route_short_name with a space)
+ *     becomes `orar_39CREIC_lv.csv` (no space), NOT
+ *     `orar_39%20CREIC_lv.csv` (URL-encoded space).
+ *
+ * @param {string} routeShortName
+ * @param {string} serviceKey  'lv' | 's' | 'd' (or 'ld')
+ * @param {string} [baseUrl]
+ * @returns {string}
+ */
+export function buildCtpCsvUrl(routeShortName, serviceKey, baseUrl = DEFAULT_BASE_URL) {
+  const urlShortName = routeShortName.replace(/\s+/g, '');
+  return baseUrl
+    .replace('{routeShortName}', encodeURIComponent(urlShortName))
+    .replace('{serviceId}', encodeURIComponent(serviceKey));
+}
+
 // ctpcj.ro's WAF treats default Node fetch headers as suspicious.
 // These are the minimal set that produces clean CSV responses.
 // (Verified 2026-06-29.)
@@ -285,10 +307,7 @@ export async function fetchCtpCsv(routeShortName, serviceKey, opts = {}) {
   // returns 404 even when CTP has published the CSV — verified by
   // hitting both endpoints: the no-space form returns the actual
   // route_long_name header, the URL-encoded form returns 404.
-  const urlShortName = routeShortName.replace(/\s+/g, '');
-  const url = baseUrl
-    .replace('{routeShortName}', encodeURIComponent(urlShortName))
-    .replace('{serviceId}', encodeURIComponent(serviceKey));
+  const url = buildCtpCsvUrl(routeShortName, serviceKey, baseUrl);
   let res;
   try {
     res = await fetchImpl(url, {

@@ -25,7 +25,8 @@ const workers = Array.from({ length: concurrency }, async () => {
   while (queue.length > 0) {
     const t = queue.shift();
     if (!t) break;
-    const url = `https://ctpcj.ro/orare/csv/orar_${encodeURIComponent(t.route)}_${encodeURIComponent(t.svc)}.csv`;
+    const { buildCtpCsvUrl } = await import('../src/sources/ctp-csv.js');
+    const url = buildCtpCsvUrl(t.route, t.svc);
     try {
       const res = await fetch(url, {
         headers: {

@@ -98,11 +98,13 @@ async function main() {
         stats.set(key, { ok: 0, notFound: 0, wafBlocked: 0, httpError: 0, networkError: 0, frequency: 0, unknown: 0, samples: [] });
       }
       const stat = stats.get(key);
-      // Build URL by hand (don't reuse fetchCtpCsv so we can use the smoke fetcher
-      // headers and pass through the raw body to the parser).
-      const url = csvBase
-        .replace('{routeShortName}', encodeURIComponent(route.shortName))
-        .replace('{serviceId}', encodeURIComponent(svcKey));
+// Build URL via the canonical `buildCtpCsvUrl` from src/sources/ctp-csv.js
+        // so URL-convention changes (e.g. CTP's no-space rule for "39 CREIC")
+        // don't need to land in three places. We fetch manually here
+        // (rather than calling fetchCtpCsv) so the smoke script can use
+        // its own headers + pass the raw body through to the parser.
+        const { buildCtpCsvUrl } = await import('../src/sources/ctp-csv.js');
+        const url = buildCtpCsvUrl(route.shortName, svcKey, csvBase);
       let res;
       try {
         res = await fetchImpl(url, {

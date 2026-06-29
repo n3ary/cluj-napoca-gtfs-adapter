@@ -148,7 +148,20 @@ export function reconcileTripsAndStopTimes(input) {
       }
       const orderedStops = pattern.stops
         .map((s) => {
-          const stop = input.stopsByStopId.get(s.stopId);
+          // byStopId is keyed by Tranzy's stop_id (Tranzy primary).
+          // Patterns from Tranzy resolve directly. Patterns from the
+          // Transitous seed use Transitous's stop_ids, which differ
+          // from Tranzy's for the same physical stop — translate via
+          // the Transitous→Tranzy map built by reconcileStops.
+          let stopId = String(s.stopId);
+          let stop = input.stopsByStopId.get(stopId);
+          if (!stop && input.transitousToTranzy) {
+            const translated = input.transitousToTranzy.get(stopId);
+            if (translated) {
+              stop = input.stopsByStopId.get(translated);
+              if (stop) stopId = translated; // canonicalize for downstream
+            }
+          }
           if (!stop) return null;
           const lat = parseFloat(stop.stop_lat);
           const lon = parseFloat(stop.stop_lon);

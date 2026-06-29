@@ -22,7 +22,7 @@ import { reconcileTripsAndStopTimes, tripsToTxt, stopTimesToTxt } from './trips.
 import { reconcileFrequencies, frequenciesToTxt } from './frequencies.js';
 import { reconcileCalendar, calendarToTxt } from './calendar.js';
 import { runDataQualityChecks } from './data-quality.js';
-import { tranzyPatternsByRouteDir } from './patterns.js';
+import { tranzyPatternsByRouteDir, seedPatternsByRouteDir } from './patterns.js';
 import { reconcileTranzyFallback } from './tranzy-fallback.js';
 
 /**
@@ -51,7 +51,7 @@ export function reconcile({ seed, tranzy, csv, options = {} }) {
   const warnings = [];
 
   const { routes, byRouteId: routesByRouteId } = reconcileRoutes({ seed, tranzy, warnings });
-  const { stops, byStopId: stopsByStopId } = reconcileStops({ seed, tranzy, warnings });
+  const { stops, byStopId: stopsByStopId, transitousToTranzy } = reconcileStops({ seed, tranzy, warnings });
   const { shapesById, rows: shapeRows } = reconcileShapes({ seed, tranzy, warnings });
   const seedPatterns = extractSeedPatterns(seed);
   const tranzyPatterns = tranzyPatternsByRouteDir(tranzy);
@@ -59,6 +59,7 @@ export function reconcile({ seed, tranzy, csv, options = {} }) {
     byRouteService: csv.byRouteService,
     routesByRouteId,
     stopsByStopId,
+    transitousToTranzy,
     seedPatterns,
     tranzyPatterns,
     shapesById,
@@ -110,6 +111,8 @@ export function reconcile({ seed, tranzy, csv, options = {} }) {
   if (unknownServiceIds.length > 0) {
     warnings.push(`Unknown service_ids encountered: ${unknownServiceIds.join(', ')}`);
   }
+  // (Was: emitted unconditionally even when empty, leaving a trailing
+  // colon in the build log. Now guarded by the length check above.)
 
   // Trip count per route (for data-quality check).
   const tripCountByRouteId = new Map();
@@ -165,22 +168,12 @@ export function reconcile({ seed, tranzy, csv, options = {} }) {
 }
 
 function extractSeedPatterns(seed) {
-  /** @type {Map<string, any>} */
-  const out = new Map();
-  for (const trip of seed.trips) {
-    const key = `${trip.routeId}|${trip.directionId}`;
-    if (out.has(key)) continue;
-    const stops = seed.stopTimes.get(trip.tripId);
-    if (!stops || stops.length === 0) continue;
-    out.set(key, {
-      stops,
-      shapeId: trip.shapeId,
-      headsign: trip.headsign,
-      tripId: trip.tripId,
-      source: 'seed',
-    });
-  }
-  return out;
+  // Re-export the canonical seed-pattern builder from `patterns.js`
+  // (single source of truth — see `src/reconcile/patterns.js
+  // seedPatternsByRouteDir` for the implementation). Both this alias
+  // and `patterns.js` use the same function so URL/option conventions
+  // can't drift.
+  return seedPatternsByRouteDir(seed);
 }
 
 function ensureAgencyTimezone(seedAgencyTxt, tz) {
