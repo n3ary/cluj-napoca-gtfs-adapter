@@ -23,10 +23,36 @@ export function reconcileStops({ seed, tranzy, warnings }) {
   const byStopId = new Map();
   const stops = [];
 
-  // ── Step 1: Tranzy is the base catalog. Iterate first; every row
-  // becomes a candidate stop. Invalid coords are still surfaced (they
-  // indicate real data quality issues), but we don't emit a warning
-  // per stop — single summary at the end.
+  // ── Step 1: Transitous seed is primary for stops. Why: the trip
+  // patterns (extracted from seed.trips + seed.stopTimes in
+  // patterns.js) reference stops by Transitous's stop_id. If we keyed
+  // byStopId by Tranzy's IDs (which is what the Tranzy-first iteration
+  // produced) the pattern's stop_id lookups in trips.js would all
+  // miss — yielding 342 trips instead of ~14,000. Transitous's stop
+  // IDs are stable across the network and match what patterns use.
+  for (const s of seed.stops) {
+    if (!s.stopId) continue;
+    const row = {
+      stop_id: s.stopId,
+      stop_code: '',
+      stop_name: s.name ?? '',
+      stop_lat: formatCoord(s.lat),
+      stop_lon: formatCoord(s.lon),
+      location_type: '0',
+      parent_station: '',
+      wheelchair_boarding: '',
+    };
+    if (!byStopId.has(row.stop_id)) {
+      byStopId.set(row.stop_id, row);
+      stops.push(row);
+    }
+  }
+
+  // ── Step 2: Tranzy fills missing stops. Tranzy has DIFFERENT stop
+  // ids for the same physical stops (different namespace). We add
+  // Tranzy-only stops under their Tranzy ids (no merging on id).
+  // Stops shared with Transitous are skipped — Transitous wins so
+  // pattern lookups succeed.
   let tranzyAdded = 0;
   let tranzySkipped = 0;
   if (tranzy && Array.isArray(tranzy.stops)) {
@@ -56,36 +82,8 @@ export function reconcileStops({ seed, tranzy, warnings }) {
     }
   }
 
-  // ── Step 2: Transitous fills gaps Tranzy doesn't cover. Different
-  // id namespaces mean we always add (no merging). Surface only a
-  // single summary, not one warning per stop.
-  let transitousAdded = 0;
-  for (const s of seed.stops) {
-    if (!s.stopId) continue;
-    if (byStopId.has(s.stopId)) continue;
-    const row = {
-      stop_id: s.stopId,
-      stop_code: '',
-      stop_name: s.name ?? '',
-      stop_lat: formatCoord(s.lat),
-      stop_lon: formatCoord(s.lon),
-      location_type: '0',
-      parent_station: '',
-      wheelchair_boarding: '',
-    };
-    byStopId.set(row.stop_id, row);
-    stops.push(row);
-    transitousAdded++;
-  }
-
-  // Single-line summaries. The previous per-stop warnings were so
-  // noisy (~820 lines for the full network) that they drowned the
-  // build log. Detail lives in stops.txt — grep if you need to audit.
   if (tranzyAdded > 0) {
-    warnings.push(`stops: Tranzy primary catalog — ${tranzyAdded} stops from Tranzy`);
-  }
-  if (transitousAdded > 0) {
-    warnings.push(`stops: ${transitousAdded} Transitous-only stops (not in Tranzy — usually Transitous mirror covers a few legacy stops Tranzy omits)`);
+    warnings.push(`stops: ${tranzyAdded} Tranzy-only stops added (not in Transitous seed)`);
   }
   if (tranzySkipped > 0) {
     warnings.push(`stops: ${tranzySkipped} Tranzy stops skipped (invalid lat/lon)`);

@@ -165,6 +165,10 @@ export function reconcileTripsAndStopTimes(input) {
         plans.set(dir, { pattern: null, orderedStops: null, csvOriginTrustable: false, headsign: null });
         continue;
       }
+      if (orderedStops.length === 0) {
+        plans.set(dir, { pattern: null, orderedStops: null, csvOriginTrustable: false, headsign: null });
+        continue;
+      }
       const expectedOriginName = orderedStops[0]?.name ?? null;
       const csvOriginName = dir === 0 ? inLabel : outLabel;
       const exact = expectedOriginName && csvOriginName
