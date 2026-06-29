@@ -18,13 +18,19 @@ const INFO_PATTERNS = [
   /Tranzy primary catalog/i,
   /routes: merged \d+ Tranzy/i,
   /routes: added \d+ Tranzy-only/i,
-  /Transitous-only/i,
+  // Transitous-only fills — successfully added what Tranzy is missing
+  /Transitous-only (shapes|stops)/i,
   // Origin validation tiers that resolved cleanly
   /exact-both/i,
   /fuzzy-matched/i,
   /fuzzy-one/i,
   /exact-one/i,
   /partial match/i,
+  // Frequency annotation anchor: success path — anchor trip +
+  // frequencies.txt entry emitted. NOT data loss.
+  /^frequency anchor: /i,
+  // Frequency annotation default fallbacks: graceful degradation
+  /frequency anchor .*: no (range|headway), using default/i,
   // Reconciliation merges
   /merged \d+ rows/i,
   /merged into/i,
@@ -46,6 +52,8 @@ const WARN_PATTERNS = [
   /catalog gap/i,
   /CSV fetch.* returned 404/i,
   /not found/i,
+  // Frequency anchor SKIPPED (not emitted) — data loss
+  /frequency anchor skipped/i,
   // Build signals
   /skipped/i,
   /dropping \d+ departures/i,
