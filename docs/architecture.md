@@ -58,7 +58,7 @@ the IDs downstream apps already key on*.
    │  route list:        │    manifest of every      │  disk. NEVER     │
    │   Tranzy union      │    attempt's outcome)     │  fetches.        │
    │   Transitous seed   │                            │                  │
-   │                     │                            │  Reconciles      │
+   │                     │                            │  Assembles       │
    │  Fetches every      │                            │  routes/stops/   │
    │  (route × service)  │                            │  shapes/trips/   │
    │  CSV from CTP.      │                            │  calendar →      │
@@ -93,28 +93,32 @@ fetches in case CTP publishes them.
           │                │                         │
           ▼                ▼                         ▼
        ┌──────────────────────────────────────────────────┐
-       │              src/sources/                        │
-       │   transitous.js   tranzy.js   ctp-csv.js         │
-       │   (loadSeed)      (TranzyClient) (parseCtpCsv)   │
+       │  src/sources/  (each = client.js + transform.js) │
+       │  tranzy/   transitous/   ctp-csv/               │
+       │  (REST)    (zip)         (REST or disk)         │
+       │  + index.js entry-point per source              │
        └─────────────────────┬────────────────────────────┘
                              │
                              ▼
        ┌──────────────────────────────────────────────────┐
-       │              src/reconcile/                      │
+       │  src/assemble/                                   │
        │                                                  │
-       │  1. seedPatterns    ← (route, dir) → stop list  │
-       │  2. tranzyPatterns  ← (route, dir) → stop list  │
-       │  3. csvDepartures   ← (route, dir, svc) → HH:MM  │
-       │  4. routes.js       ← merge routes.txt          │
-       │  5. stops.js        ← merge stops.txt           │
-       │  6. shapes.js       ← merge shapes.txt          │
-       │  7. trips.js        ← CSV × patterns → trips    │
-       │  8. stop-times.js   ← computeStopTimes per trip │
-       │  9. calendar.js     ← derive from CSV service   │
-       │ 10. data-quality.js ← emit warnings (#14, #15)  │
+       │  merge/   ← combine multiple sources             │
+       │    routes.js    stops.js    shapes.js            │
        │                                                  │
-       │  See docs/reconciliation-rules.md for priority   │
-       │  table and edge-case handling.                   │
+       │  derive/  ← build one structure from inputs      │
+       │    patterns.js   calendar.js   frequencies.js   │
+       │                                                  │
+       │  emit/    ← generate GTFS rows                  │
+       │    trips.js   tranzy-fallback.js                │
+       │                                                  │
+       │  check/   ← validation + warnings                │
+       │    data-quality.js                              │
+       │                                                  │
+       │  index.js (orchestrator)                         │
+       │                                                  │
+       │  See docs/assemble-rules.md for priority table   │
+       │  and edge-case handling.                         │
        └─────────────────────┬────────────────────────────┘
                              │
                              ▼
@@ -137,80 +141,81 @@ fetches in case CTP publishes them.
 
 ### `src/sources/`
 
-Thin adapters around each upstream. Each module:
+Each upstream source has its own folder with a 3-file structure:
+`client.js` (network/disk IO), `transform.js` (pure data shape
+conversion), `index.js` (public API + convenience loader).
 
-- Returns normalized in-memory shapes (not upstream-specific row types).
-- Treats partial failures (404, empty arrays) as warnings, not errors.
-- Has zero dependencies on other modules — they can be composed freely.
+- `src/sources/tranzy/` — Tranzy.ai REST client + GTFS-shaped transform.
+  Public API: `loadTranzyData(opts)` → `{ routes, stops, trips, ...,
+  byRouteId, byStopId }`. Single network layer (`TranzyClient`), pure
+  transform layer (stamps `source: 'tranzy'` + builds indexes).
+- `src/sources/transitous/` — Transitous GTFS zip loader + transform.
+  Public API: `loadTransitousData(opts)` → `{ routes, stops, trips, ...,
+  patternsByRouteDir }`.
+- `src/sources/ctp-csv/` — CTP CSV timetable fetcher + parser. Public
+  API: `fetchCtpCsv()` (network), `readCtpCsvFromDisk()` (build phase
+  reads pre-fetched CSVs from `.build-input/`), `fetchAllCsvSchedules()`
+  (multi-fetch orchestrator), `parseCtpCsv()` (pure parser),
+  `buildCtpCsvUrl()` + `normalizeShortNameForCtpUrl()` (URL builder —
+  the latter strips whitespace so `39 CREIC` becomes `39CREIC`).
 
-#### `src/sources/transitous.js`
+### `src/assemble/`
 
-Wraps `loadSeed` from `src/lib/seed.js`. Single public function:
-`loadTransitousSeed({ url, userAgent })`. Returns the parsed seed
-(`{ routes, stops, trips, stopTimes, shapesById, agencyTxt }`).
+Pipeline that produces the final in-memory GTFS structure, grouped by
+the kind of work each file does:
 
-#### `src/sources/tranzy.js`
+- `merge/` — combine rows from multiple sources.
+  - `routes.js` — Tranzy primary + Transitous overlay (re-keys shared
+    routes to Transitous `route_id` for downstream stability).
+  - `stops.js` — Tranzy primary + Transitous fill (Tranzy covers more
+    stops; Transitous fills the legacy few hundred Tranzy doesn't).
+  - `shapes.js` — Tranzy primary + Transitous fill (per-direction
+    shapes `<route>_<dir>` convention).
+- `derive/` — build one structure from a single source.
+  - `patterns.js` — first trip's stop sequence per `(route_id, dir)`;
+    Tranzy primary, Transitous seed fallback.
+  - `calendar.js` — service-id → weekday-bool map from CSV keys.
+  - `frequencies.js` — anchor trip emission for `*-range` annotations.
+- `emit/` — generate GTFS rows.
+  - `trips.js` — for each CSV departure, pick the pattern, generate
+    `trip_id` (format `${route}_${dir}_${serviceId}_${HHMM}`), write
+    trip + stop_times rows. Validates CSV terminals against pattern
+    first stops. Emits `timepoint='0'` on every stop_time row (times
+    are interpolated, not authoritative).
+  - `tranzy-fallback.js` — NTxxx fallback trips for routes without CSV.
+- `check/` — validation + warnings.
+  - `data-quality.js` — emit warnings (#14 route colors, #15 M26
+    frequencies, etc.).
 
-The Node port of the `ctp-gtfs-adapter`'s `client.py`. Class
-`TranzyClient` with one method per endpoint plus `fetchAll()`.
+`index.js` at top of `assemble/` is the orchestrator.
 
-#### `src/sources/ctp-csv.js`
+**Source priority table** lives in
+[`docs/assemble-rules.md`](./assemble-rules.md). Transitous is
+consulted only for: ID stability on shared routes, fallback patterns
+for Transitous-only routes (~1 today), lookup-only fallbacks when CTP
+references a stop Tranzy doesn't have, and `agency.txt`.
 
-Two functions:
-- `fetchAllCsvDepartures({ routes, serviceKeys, baseUrl })` — fans out
-  to ~180 URLs (routes × service keys) with 4-way concurrency.
-- `parseCtpCsv(text)` — single-CSV parser (rows 0..4 metadata, row 5+
-  data table with the WAF-aware headers from `docs/csv-timetable-format.md`).
+### `src/lib/`
 
-### `src/reconcile/`
+Pure helpers, no I/O (mostly vendored from `neary-gtfs`):
 
-The pipeline that produces the final output GTFS structure. **Tranzy
-is the primary catalog** (see priority table in
-[`docs/reconciliation-rules.md`](./reconciliation-rules.md)); Transitous
-seed is the ID-stability overlay. Order:
-
-1. `tranzyPatterns(routeId, dir)` — first trip's stop sequence from
-   Tranzy, or null. Primary pattern source.
-2. `seedPatterns(routeId, dir)` — same lookup against Transitous seed.
-   Fallback when Tranzy doesn't have this direction (the case behind
-   `neary-gtfs#13` 25N dir=1 was solved when Tranzy got the direction;
-   the case behind `#15` M26 dir=1 was solved by Tranzy having it).
-3. `csvDepartures(routeId)` — map of `(dir, serviceId) → HH:MM[]`.
-4. `routes.js` — Tranzy first (all Tranzy rows included with Tranzy
-   `route_id`); Transitous overlay re-keys shared routes (matched by
-   `route_short_name`) to Transitous's `route_id` for downstream
-   stability, and adds Transitous-only routes.
-5. `stops.js` — Tranzy first (~880 stops); Transitous fills the legacy
-   few hundred Transitous has but Tranzy doesn't.
-6. `shapes.js` — Tranzy first (per-direction shapes); Transitous fills
-   legacy shapes.
-7. `trips.js` — for each CSV departure, pick the pattern (Tranzy
-   primary), generate `trip_id` (format
-   `${route}_${dir}_${serviceId}_${HHMM}`), write trip row. Validates
-   the CSV's `in_stop_name` / `out_stop_name` header against the
-   pattern's terminal stops and skips the CSV terminal as a headsign
-   fallback on mismatch (see `src/reconcile/trips.js`
-   `terminalNamesMatch`). Emits `timepoint='0'` on every stop_time row
-   since our arrival/departure times are interpolated, not authoritative.
-8. `stop-times.js` — for each trip, compute per-stop arrival/departure
-   times via `computeStopTimes()` from `lib/timing.js`.
-9. `calendar.js` — service-id → weekday-bool map from CSV keys scraped.
-10. `data-quality.js` — emit warnings (#14, #15, M26, M26N, Route 22, etc.).
-
-### `src/lib/` (vendored from `neary-gtfs`)
-
-Pure helpers, no I/O:
-
+- `build-input.js` — read/write helpers for `.build-input/csv-status.json`
+  and `.build-input/csv/<route>_<svc>.csv` (the data-exchange layer
+  between smoke and build phases).
 - `seed.js` — load GTFS zip from path/URL.
 - `timing.js` — `pickSpeedBucket()` + `computeStopTimes()` (peak/offpeak/
   night speed model + shape projection + dwell).
 - `csv.js` — RFC4180-ish GTFS CSV parser (for reading the seed).
 - `polyline.js` — project stops onto polyline, haversine fallback.
+- `log-severity.js` — tagged warning objects (`{severity, message, meta}`)
+  with GHA `::group::` rendering and ANSI colors.
+- `stop-id-translator.js` — Transitous→Tranzy stop_id mapping by
+  name (CTP CSVs reference stops by name; the seed has different ids).
 
 ### `src/gtfs.js`
 
-The output writer. Given the merged in-memory structures from
-`src/reconcile/`, writes the eight required GTFS `.txt` files plus
+The output writer. Given the assembled in-memory structures from
+`src/assemble/`, writes the eight required GTFS `.txt` files plus
 `feed_info.txt` into a zip using `archiver`.
 
 ### `src/cli.js`
@@ -218,22 +223,26 @@ The output writer. Given the merged in-memory structures from
 Single entry point:
 
 ```bash
-node src/cli.js build           # full pipeline → output/cluj-napoca.gtfs.zip
+node src/cli.js build           # reads CSVs from .build-input/, assembles → output/<name>.gtfs.zip
 node src/cli.js validate [path]  # check a produced zip
-node src/cli.js reconcile --dry  # print what would change, don't write
+node src/cli.js reconcile       # fetches CSVs upstream (dev only), prints summary
 ```
 
 ## Deployment
 
 GitHub Actions cron at `30 0 * * *` UTC (after Transitous's daily ~00:00
-UTC import). Steps:
+UTC import). Two-phase pipeline:
 
 1. Checkout this repo.
 2. Setup Node 24, `npm ci`.
-3. `node src/cli.js build` with `TRANZY_API_KEY` from repo secret.
-4. Push `output/cluj-napoca.gtfs.zip` to the `binaries` branch (orphan,
+3. **Stage 1** — `npm run smoke:csv` (fetches all CSVs from CTP, populates
+   `.build-input/`). Fails loud on infra misses (WAF / HTTP 5xx / network).
+4. **Stage 2** — `node src/cli.js build` (reads CSVs from `.build-input/`,
+   assembles the GTFS feed, writes the zip). Never fetches upstream.
+   Both stages use `TRANZY_API_KEY` from repo secret.
+5. Push `output/cluj-napoca.gtfs.zip` to the `binaries` branch (orphan,
    same pattern as `neary-gtfs/.github/workflows/daily.yml`).
-5. GitHub raw serves it at
+6. GitHub raw serves it at
    `https://raw.githubusercontent.com/ciotlosm/cluj-napoca-gtfs-adapter/binaries/output/cluj-napoca.gtfs.zip`.
 
 The `neary-gtfs` pipeline then mirrors this URL into its `binaries`

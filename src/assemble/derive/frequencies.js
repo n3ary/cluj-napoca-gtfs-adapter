@@ -21,8 +21,8 @@
  * warning.
  */
 
-import { computeStopTimes } from '../lib/timing.js';
-import { info, warnMsg } from '../lib/log-severity.js';
+import { computeStopTimes } from '../../lib/timing.js';
+import { info, warnMsg } from '../../lib/log-severity.js';
 
 const DEFAULT_WINDOW = { start: '05:00', end: '23:00' };
 const DEFAULT_HEADWAY_SEC = 900; // 15 min — urban bus default

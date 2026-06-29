@@ -15,6 +15,7 @@ export {
   readCtpCsvFromDisk,
   fetchAllCsvSchedules,
   buildCtpCsvUrl,
+  normalizeShortNameForCtpUrl,
   CSV_BASE_URL,
   CSV_SERVICE_KEYS,
   CSV_SERVICE_ID_MAP,

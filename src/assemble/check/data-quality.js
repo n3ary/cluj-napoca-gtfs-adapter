@@ -11,7 +11,7 @@
  *   6. CSV row count vs seed trip count divergence
  */
 
-import { info, warnMsg } from '../lib/log-severity.js';
+import { info, warnMsg } from '../../lib/log-severity.js';
 
 const ROUTE_TYPE_DEFAULT_COLORS = {
   0: '3BAC2C',   // tram → green

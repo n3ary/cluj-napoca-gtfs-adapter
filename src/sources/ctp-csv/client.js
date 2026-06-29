@@ -22,14 +22,34 @@ export { parseCtpCsv, classifyCell } from './parser.js';
 const DEFAULT_BASE_URL = 'https://ctpcj.ro/orare/csv/orar_{routeShortName}_{serviceId}.csv';
 
 /**
+ * Normalize a route_short_name for CTP's CSV URL path.
+ *
+ * CTP's URL convention strips whitespace from route_short_name:
+ *   - `39 CREIC` (the Transitous route_short_name with a space)
+ *     becomes `39CREIC` (no space) → URL `orar_39CREIC_lv.csv`
+ *   - URL-encoded form `orar_39%20CREIC_lv.csv` returns 404 even
+ *     when CTP has published the CSV — verified by hitting both
+ *     endpoints: the no-space form returns the actual route_long_name
+ *     header, the URL-encoded form returns 404.
+ *
+ * Exposed as a separate helper so it's discoverable — the only
+ * route_short_name with whitespace today is `39 CREIC`, but CTP could
+ * add more. Anything CSV-URL-related should funnel through here.
+ *
+ * @param {string} routeShortName
+ * @returns {string}
+ */
+export function normalizeShortNameForCtpUrl(routeShortName) {
+  return routeShortName.replace(/\s+/g, '');
+}
+
+/**
  * Build the canonical CTP CSV URL for a (route_short_name, service_id)
  * pair. Single source of truth — the smoke script and dump-404s.js
  * both use this so URL-convention changes only need to land in one place.
  *
- * CTP's URL convention strips whitespace from route_short_name:
- *   - `39 CREIC` (the Transitous route_short_name with a space)
- *     becomes `orar_39CREIC_lv.csv` (no space), NOT
- *     `orar_39%20CREIC_lv.csv` (URL-encoded space).
+ * Calls {@link normalizeShortNameForCtpUrl} to strip whitespace before
+ * building the URL (see that helper for why CTP requires this).
  *
  * @param {string} routeShortName
  * @param {string} serviceKey  'lv' | 's' | 'd' (or 'ld')
@@ -37,7 +57,7 @@ const DEFAULT_BASE_URL = 'https://ctpcj.ro/orare/csv/orar_{routeShortName}_{serv
  * @returns {string}
  */
 export function buildCtpCsvUrl(routeShortName, serviceKey, baseUrl = DEFAULT_BASE_URL) {
-  const urlShortName = routeShortName.replace(/\s+/g, '');
+  const urlShortName = normalizeShortNameForCtpUrl(routeShortName);
   return baseUrl
     .replace('{routeShortName}', encodeURIComponent(urlShortName))
     .replace('{serviceId}', encodeURIComponent(serviceKey));

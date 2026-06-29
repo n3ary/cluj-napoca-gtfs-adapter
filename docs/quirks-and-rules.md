@@ -7,7 +7,7 @@ upstream catalog. Read this before changing warning text, classify
 logic, or the failure thresholds in `scripts/smoke-csv-parser.js`.
 
 For the per-field priority order (which source wins for which GTFS
-field) see [`reconciliation-rules.md`](./reconciliation-rules.md).
+field) see [`assemble-rules.md`](./assemble-rules.md).
 For the data-quality data-loss categories see
 [`known-limitations.md`](./known-limitations.md).
 
@@ -101,7 +101,7 @@ CTP's CSV carries two terminal-name labels in its metadata header
   used as the headsign.)
 
 The adapter validates these against the resolved pattern's first
-stop using `terminalNamesMatch()` in `src/reconcile/trips.js`:
+stop using `terminalNamesMatch()` in `src/assemble/emit/trips.js`:
 
 1. **Exact match** — case-insensitive string equality after
    lowercase + whitespace trim.
@@ -151,7 +151,7 @@ annotations:
 - `Nmin` — fixed headway (e.g. `5min`)
 - `*` markers (see above)
 
-The adapter handles these in `src/reconcile/frequencies.js`:
+The adapter handles these in `src/assemble/derive/frequencies.js`:
 
 1. Pick the **first** window as the operating range (e.g.
    `05:05-22:40`)
@@ -194,7 +194,7 @@ a real data loss.
 For routes with **no CTP CSV coverage** (e.g. the `39 CREIC` whole-line
 gap, or new metropolitan lines CTP hasn't published yet), the adapter
 pulls trips directly from Tranzy's `/trips` and `/stop_times`
-endpoints via `src/reconcile/tranzy-fallback.js`.
+endpoints via `src/assemble/emit/tranzy-fallback.js`.
 
 Constraints:
 
@@ -237,7 +237,7 @@ skip the route×service combo entirely without emitting
 ## GTFS specification quirks
 
 The adapter makes several choices that deviate from "naive" GTFS
-output. These are documented in `reconciliation-rules.md` but called
+output. These are documented in `assemble-rules.md` but called
 out here for quick reference:
 
 - **`timepoint='0'` on every `stop_times.txt` row** — our

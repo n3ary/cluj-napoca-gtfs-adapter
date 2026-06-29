@@ -1,29 +1,29 @@
 /**
- * Reconciler orchestrator. Pulls the three sources together into the
+ * Assembler orchestrator. Pulls the three sources together into the
  * final in-memory GTFS structure, ready for the zip writer.
  *
  * Pipeline:
  *   1. seedPatterns  (src/sources/transitous/index.js)
  *   2. tranzyPatterns (this module's Tranzy-pattern extraction)
- *   3. routes        (src/reconcile/routes.js)
- *   4. stops         (src/reconcile/stops.js)
- *   5. shapes        (src/reconcile/shapes.js)
- *   6. trips+stop_times  (src/reconcile/trips.js)
- *   7. calendar      (src/reconcile/calendar.js)
- *   8. data quality  (src/reconcile/data-quality.js)
+ *   3. routes        (src/assemble/merge/routes.js)
+ *   4. stops         (src/assemble/merge/stops.js)
+ *   5. shapes        (src/assemble/merge/shapes.js)
+ *   6. trips+stop_times  (src/assemble/emit/trips.js)
+ *   7. calendar      (src/assemble/derive/calendar.js)
+ *   8. data quality  (src/assemble/check/data-quality.js)
  *
  * Returns everything the zip writer needs in `src/gtfs.js`.
  */
 
-import { reconcileRoutes, routesToTxt } from './routes.js';
-import { reconcileStops, stopsToTxt } from './stops.js';
-import { reconcileShapes, shapesToTxt } from './shapes.js';
-import { reconcileTripsAndStopTimes, tripsToTxt, stopTimesToTxt } from './trips.js';
-import { reconcileFrequencies, frequenciesToTxt } from './frequencies.js';
-import { reconcileCalendar, calendarToTxt } from './calendar.js';
-import { runDataQualityChecks } from './data-quality.js';
-import { tranzyPatternsByRouteDir, seedPatternsByRouteDir } from './patterns.js';
-import { reconcileTranzyFallback } from './tranzy-fallback.js';
+import { reconcileRoutes, routesToTxt } from './merge/routes.js';
+import { reconcileStops, stopsToTxt } from './merge/stops.js';
+import { reconcileShapes, shapesToTxt } from './merge/shapes.js';
+import { reconcileTripsAndStopTimes, tripsToTxt, stopTimesToTxt } from './emit/trips.js';
+import { reconcileFrequencies, frequenciesToTxt } from './derive/frequencies.js';
+import { reconcileCalendar, calendarToTxt } from './derive/calendar.js';
+import { runDataQualityChecks } from './check/data-quality.js';
+import { tranzyPatternsByRouteDir, seedPatternsByRouteDir } from './derive/patterns.js';
+import { reconcileTranzyFallback } from './emit/tranzy-fallback.js';
 import { warnMsg } from '../lib/log-severity.js';
 
 /**
@@ -89,7 +89,7 @@ export function reconcile({ seed, tranzy, csv, options = {} }) {
   // (typically the 60 Tranzy-only metropolitan lines that CTP doesn't
   // publish CSVs for). Emits trip rows with empty times + timepoint=0
   // so consumers see "this route exists with these trips" instead of
-  // "no service". See `src/reconcile/tranzy-fallback.js` for rationale.
+  // "no service". See `src/assemble/emit/tranzy-fallback.js` for rationale.
   const { tripRows: fallbackTripRows, stopTimeRows: fallbackStopTimeRows } =
     reconcileTranzyFallback({
       tranzy,
@@ -170,7 +170,7 @@ export function reconcile({ seed, tranzy, csv, options = {} }) {
 
 function extractSeedPatterns(seed) {
   // Re-export the canonical seed-pattern builder from `patterns.js`
-  // (single source of truth — see `src/reconcile/patterns.js
+  // (single source of truth — see `src/assemble/derive/patterns.js
   // seedPatternsByRouteDir` for the implementation). Both this alias
   // and `patterns.js` use the same function so URL/option conventions
   // can't drift.

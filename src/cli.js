@@ -31,7 +31,7 @@ import { existsSync } from 'node:fs';
 import { TranzyClient } from './sources/tranzy/index.js';
 import { loadTransitousSeed } from './sources/transitous/index.js';
 import { fetchAllCsvSchedules, readCtpCsvFromDisk } from './sources/ctp-csv/index.js';
-import { reconcile } from './reconcile/index.js';
+import { reconcile } from './assemble/index.js';
 import { writeGtfsZip, validateGtfsZip } from './gtfs.js';
 import { statusManifestExists } from './lib/build-input.js';
 

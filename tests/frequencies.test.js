@@ -9,7 +9,7 @@
 
 import { describe, it, expect } from 'vitest';
 
-import { reconcile } from '../src/reconcile/index.js';
+import { reconcile } from '../src/assemble/index.js';
 import { parseCtpCsv } from '../src/sources/ctp-csv/index.js';
 import { fixtures } from './fixtures/index.js';
 import { buildFixtureSeedMemory } from './fixtures/seed-builder.js';

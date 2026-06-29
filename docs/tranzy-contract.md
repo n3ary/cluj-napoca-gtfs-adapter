@@ -93,9 +93,9 @@ The ctp-gtfs-adapter Python client made this explicit in `fetch_all()`:
 > *"Failures on optional endpoints (calendar / stop_times) are downgraded to
 > empty lists so a single missing endpoint doesn't kill the build."*
 > — the original Python `ctp-gtfs-adapter` `fetch_all()` docstring. Same
-> behavior in the Node port (`src/sources/tranzy.js`).
+> behavior in the Node port (`src/sources/tranzy/index.js`).
 
-Same behavior in the Node port (`src/sources/tranzy.js`).
+Same behavior in the Node port (`src/sources/tranzy/index.js`).
 
 ### 2. `/stop_times` has no times
 
@@ -109,7 +109,7 @@ need either:
 - A time-distance projection using `shape_dist_traveled` (synthetic — fine
   for visualization, not authoritative).
 
-See [`reconciliation-rules.md`](./reconciliation-rules.md) for how we
+See [`assemble-rules.md`](./assemble-rules.md) for how we
 combine these three sources.
 
 ### 3. `shape_id` encodes `<route>_<direction>`

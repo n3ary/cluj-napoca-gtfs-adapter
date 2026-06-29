@@ -18,7 +18,7 @@
  * we never parse it as Number.
  */
 
-import { info, warnMsg } from '../lib/log-severity.js';
+import { info, warnMsg } from '../../lib/log-severity.js';
 
 export function reconcileStops({ seed, tranzy, warnings }) {
   /** @type {Map<string, any>} */

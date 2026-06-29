@@ -23,8 +23,8 @@
  * See `docs/reconciliation-rules.md` for the priority table.
  */
 
-import { parseCsv } from '../lib/csv.js';
-import { info } from '../lib/log-severity.js';
+import { parseCsv } from '../../lib/csv.js';
+import { info } from '../../lib/log-severity.js';
 
 /**
  * @param {{

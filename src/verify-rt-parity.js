@@ -100,7 +100,7 @@ async function main() {
     console.error(`[trip-ids] FAIL: ${mismatches.length}/${ids.length} trip_ids do not end with _HHMM or _NTxxx`);
     for (const id of mismatches.slice(0, 10)) console.error(`  - ${id}`);
     if (mismatches.length > 10) console.error(`  ... and ${mismatches.length - 10} more`);
-    console.error(`[trip-ids] fix: src/reconcile/trips.js makeTripId() should produce IDs ending in _HHMM or _NTxxx`);
+    console.error(`[trip-ids] fix: src/assemble/emit/trips.js makeTripId() should produce IDs ending in _HHMM or _NTxxx`);
     exit(1);
   }
 

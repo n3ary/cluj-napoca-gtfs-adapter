@@ -20,7 +20,7 @@
  * by shape_id and emit rows ordered by sequence.
  */
 
-import { info } from '../lib/log-severity.js';
+import { info } from '../../lib/log-severity.js';
 
 export function reconcileShapes({ seed, tranzy, warnings }) {
   /** @type {Map<string, Array<{lat:number, lon:number, dist?:number}>>} */

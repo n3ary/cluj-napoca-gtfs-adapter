@@ -13,8 +13,8 @@
  *   e.g. `45_1_LV_9_0721`  (route 45, dir 1, LV service, 9th departure, 07:21)
  */
 
-import { computeStopTimes } from '../lib/timing.js';
-import { info, warnMsg } from '../lib/log-severity.js';
+import { computeStopTimes } from '../../lib/timing.js';
+import { info, warnMsg } from '../../lib/log-severity.js';
 
 const DEFAULT_TIMING = {
   speedKmh: { peak: 14, offpeak: 22, night: 28 },

@@ -42,7 +42,7 @@
  * See `docs/reconciliation-rules.md` priority table for the rationale.
  */
 
-import { info, warnMsg } from '../lib/log-severity.js';
+import { info, warnMsg } from '../../lib/log-severity.js';
 
 /**
  * @typedef {{

@@ -31,7 +31,7 @@ For M26 LV (the original #15 example):
 05:41,05:50          ← specific dir0 + specific dir1 times
 ```
 
-The reconciler derives:
+The assembler derives:
 - **Window:** earliest start (`05:05`) → latest end (`22:40`)
 - **Headway:** average of headway range = `(10 + 20) / 2 = 15 min = 900 s`
 
@@ -68,7 +68,7 @@ scheduled times, so the effective schedule is "every 15 minutes between
   recognize this; treat as malformed → warning.
 
 Test coverage: `tests/frequencies.test.js`. The fix is also wired into
-the `reconcile()` orchestrator and surfaces in `stats.frequencyAnchors`.
+the `assemble/index.js` orchestrator and surfaces in `stats.frequencyAnchors`.
 
 ## 2. Routes without CSV data fall back to the (potentially stale) seed
 
@@ -145,9 +145,9 @@ do the same.
 ## 6. The Tranzy client throttles in-process only
 
 `TRANZY_RATE_LIMIT_MS` is enforced via a "last-request timestamp" inside
-each `TranzyClient` instance. If two reconciler invocations run in
+each `TranzyClient` instance. If two assembler invocations run in
 parallel, both can race past the throttle. For our usage we run one
-reconcile per minute (CI cron), so this is fine. If you ever fan out,
+build per minute (CI cron), so this is fine. If you ever fan out,
 move throttling to a shared middleware.
 
 ## 7. The `agency.txt` timezone is hard-coded
@@ -204,7 +204,7 @@ npm run smoke:trip-ids
 
 In CI, the step runs after `build` (so `output/cluj-napoca.gtfs.zip`
 exists). Failure prints up to 10 offending trip_ids and points at
-`makeTripId()` in `src/reconcile/trips.js` as the fix location.
+`makeTripId()` in `src/assemble/emit/trips.js` as the fix location.
 
 ## 9. README "limitations" section is the same as this doc
 
