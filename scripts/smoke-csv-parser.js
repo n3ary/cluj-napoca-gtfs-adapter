@@ -95,7 +95,7 @@ async function main() {
       const { route, svcKey } = tasks[myIdx];
       const key = `${route.shortName}`;
       if (!stats.has(key)) {
-        stats.set(key, { ok: 0, missing: 0, frequency: 0, unknown: 0, samples: [] });
+        stats.set(key, { ok: 0, notFound: 0, wafBlocked: 0, httpError: 0, networkError: 0, frequency: 0, unknown: 0, samples: [] });
       }
       const stat = stats.get(key);
       // Build URL by hand (don't reuse fetchCtpCsv so we can use the smoke fetcher
@@ -110,19 +110,30 @@ async function main() {
           signal: AbortSignal.timeout(15_000),
         });
       } catch (err) {
-        stat.missing++;
+        // Timeout / DNS / TCP refused — transient infrastructure issue,
+        // distinct from "CTP doesn't publish this CSV" (which is 404).
+        stat.networkError++;
         continue;
       }
-      if (res.status === 404) { stat.missing++; continue; }
+      if (res.status === 404) {
+        // 404 = CTP doesn't publish this CSV. Permanent catalog gap,
+        // not a connectivity issue.
+        stat.notFound++;
+        continue;
+      }
       if (!res.ok) {
+        // Other 4xx/5xx — server-side problem worth surfacing.
         console.warn(`[smoke:csv] ${route.shortName}_${svcKey}: HTTP ${res.status}`);
-        stat.missing++;
+        stat.httpError++;
         continue;
       }
       const body = await res.text();
       if (!body.startsWith('route_long_name,')) {
-        // WAF / captcha page — treat as transient missing
-        stat.missing++;
+        // WAF / captcha page — got 200 OK but the body isn't a CSV.
+        // Distinct from both 404 (no such CSV) and HTTP errors
+        // (server rejected us). Treated as transient — usually fixed
+        // by retry with different headers or from a different IP.
+        stat.wafBlocked++;
         continue;
       }
       const parsed = parseCtpCsv(body);
@@ -152,29 +163,50 @@ async function main() {
 
   // Report
   let totalOk = 0;
-  let totalMissing = 0;
+  let totalNotFound = 0;
+  let totalWafBlocked = 0;
+  let totalHttpError = 0;
+  let totalNetworkError = 0;
   let totalFreq = 0;
-  const routesWithMissing = [];
+  const routesWithNoCsv = [];
   for (const [shortName, s] of stats.entries()) {
     totalOk += s.ok;
-    totalMissing += s.missing;
+    totalNotFound += s.notFound;
+    totalWafBlocked += s.wafBlocked;
+    totalHttpError += s.httpError;
+    totalNetworkError += s.networkError;
     totalFreq += s.frequency;
-    if (s.ok === 0 && s.missing > 0) routesWithMissing.push(shortName);
+    // Route has "no CSV" when ALL service-day fetches failed (no ok
+    // results and at least one failure — could be all 404, all WAF,
+    // a mix, or one catastrophic network error on every retry).
+    if (s.ok === 0 && (s.notFound + s.wafBlocked + s.httpError + s.networkError) > 0) {
+      routesWithNoCsv.push(shortName);
+    }
   }
+  const totalFetches = totalOk + totalNotFound + totalWafBlocked + totalHttpError + totalNetworkError;
 
   console.log('');
   console.log('=== CSV smoke test summary ===');
-  console.log(`Total CSVs scraped:    ${routes.length * CSV_SERVICE_KEYS.length}`);
-  console.log(`Successfully parsed:   ${totalOk}`);
-  console.log(`Missing (404 / WAF):   ${totalMissing}`);
-  console.log(`With frequency anns:   ${totalFreq}`);
-  console.log(`Unrecognized cells:    ${unrecognizedCount}`);
-  console.log(`Routes with no CSV:     ${routesWithMissing.length}`);
-  if (routesWithMissing.length > 0 && routesWithMissing.length <= 20) {
-    console.log(`  → ${routesWithMissing.join(', ')}`);
-  } else if (routesWithMissing.length > 20) {
-    console.log(`  → ${routesWithMissing.slice(0, 20).join(', ')}, ... and ${routesWithMissing.length - 20} more`);
+  console.log(`Total CSVs scraped:    ${totalFetches}`);
+  console.log('');
+  console.log('By fetch status:');
+  console.log(`  Successfully parsed:  ${totalOk}`);
+  console.log(`  Not found (404):      ${totalNotFound}    (CTP doesn't publish these CSVs)`);
+  console.log(`  WAF-blocked:           ${totalWafBlocked}    (200 OK but body wasn't CSV)`);
+  console.log(`  HTTP error:            ${totalHttpError}    (non-404 server error)`);
+  console.log(`  Network error:         ${totalNetworkError}    (timeout/connect refused)`);
+  console.log('');
+  console.log('Route coverage:');
+  console.log(`  Routes with ≥1 CSV:   ${stats.size - routesWithNoCsv.length}`);
+  console.log(`  Routes with no CSV:    ${routesWithNoCsv.length}    (no service day fetched successfully)`);
+  if (routesWithNoCsv.length > 0 && routesWithNoCsv.length <= 20) {
+    console.log(`    → ${routesWithNoCsv.join(', ')}`);
+  } else if (routesWithNoCsv.length > 20) {
+    console.log(`    → ${routesWithNoCsv.slice(0, 20).join(', ')}, ... and ${routesWithNoCsv.length - 20} more`);
   }
+  console.log('');
+  console.log(`Frequency annotations found:   ${totalFreq}`);
+  console.log(`Unrecognized cells:            ${unrecognizedCount}`);
 
   if (unrecognizedCount > 0) {
     console.error('');
@@ -188,6 +220,7 @@ async function main() {
     exit(1);
   }
 
+  const totalMissing = totalNotFound + totalWafBlocked + totalHttpError + totalNetworkError;
   if (failOnMissing && totalMissing > routes.length * CSV_SERVICE_KEYS.length / 2) {
     console.error(`[smoke:csv] FAIL: ${totalMissing}/${routes.length * CSV_SERVICE_KEYS.length} CSVs missing (>50% threshold) — looks like a connectivity issue`);
     exit(2);
