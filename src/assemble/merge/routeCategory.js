@@ -71,15 +71,21 @@ export const CATEGORIES = [
   {
     id: 'school',
     label: 'Transport Elevi',
-    // School buses appear under three naming patterns in Tranzy:
+    // School buses appear under two patterns in Tranzy:
     //   1. `TE*` short_name (urban: TE1..TE14, TE-OG)
-    //   2. `M7[5-9][A-Z]?` short_name (Floresti school: M75A..M79C)
-    //   3. Any route whose long_name or route_desc contains "elevi"
-    //      case-insensitively — defensive against operator-named
-    //      variants CTP may introduce later.
+    //   2. Any route whose short_name, long_name, or route_desc
+    //      contains "elevi" case-insensitively — defensive against
+    //      operator-named variants CTP may introduce later.
+    //
+    // Note: the M7x school-bus family (M75A..M79C) is metroline-shaped
+    // (M* prefix). After PR review we dropped the M7x-specific short_name
+    // regex — those routes fall through to `metroline` only. The "elevi"
+    // substring check would catch them if their long_name ever explicitly
+    // says "elevi"; until then they're classified as regular metroline
+    // routes, which is also factually correct (they're Florești metroline
+    // services that happen to also serve school destinations).
     match: (s, l, d) =>
       /^TE/i.test(s) ||
-      /^M7[5-9][A-Z]?$/.test(s) ||
       /elevi/i.test(s) ||
       /elevi/i.test(l) ||
       /elevi/i.test(d),

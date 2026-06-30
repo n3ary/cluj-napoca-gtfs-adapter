@@ -234,14 +234,18 @@ describe('reconcile', () => {
     );
 
     // route_networks.txt — one row per categorized route. M76A (route_id 145)
-    // is the signature 1:many case: school + metroline → two rows.
-    // Regular urban route 1 is excluded; M26 (seed) is included as metroline.
+    // is metroline-only since we dropped the M7x short_name regex from
+    // the school pattern — long_name "TE2 Floresti ..." doesn't contain
+    // "elevi", so school no longer matches. M26U (route_id 68) still
+    // has 1:many via Untold + M* prefix. Regular urban route 1 excluded;
+    // M26 (seed) included as metroline.
     const rnLines = files['route_networks.txt'].trim().split('\n');
     expect(rnLines[0]).toBe('network_id,route_id');
     expect(rnLines).toContain('school,93');
-    expect(rnLines).toContain('school,145');
-    expect(rnLines).toContain('metroline,145'); // M76A also metroline
+    expect(rnLines).not.toContain('school,145'); // M76A no longer school
+    expect(rnLines).toContain('metroline,145');
     expect(rnLines).toContain('festival,68');
+    expect(rnLines).toContain('metroline,68'); // M26U also metroline
     expect(rnLines).toContain('night,15');
     expect(rnLines).toContain('special,205');
     expect(rnLines).toContain('metroline,M26');
@@ -253,12 +257,9 @@ describe('reconcile', () => {
     const r93row = routesTxt.split('\n').find((l) => l.startsWith('93,'));
     expect(r93row).toMatch(/,Manastur,Transport Elevi,/);
     const r145row = routesTxt.split('\n').find((l) => l.startsWith('145,'));
-    // M76A: "TE2 Floresti " stripped → "str. Somesului" (the Tranzy
-    // fixture's long_name doesn't have the " - Liceul D. Tautan"
-    // suffix; that's only in the unit-test fixture). route_desc carries
-    // BOTH school + metroline labels (comma-separated, so the CSV writer
-    // quotes the field).
-    expect(r145row).toMatch(/,str\. Somesului,(?:"Transport Elevi, Metropolitana"|Transport Elevi, Metropolitana),/);
+    // M76A: "TE2 Floresti " stripped → "str. Somesului". route_desc is
+    // now "Metropolitana" only (no longer 1:many with school).
+    expect(r145row).toMatch(/,str\. Somesului,Metropolitana,/);
     const r68row = routesTxt.split('\n').find((l) => l.startsWith('68,'));
     // Trailing "(untold)" stripped from long_name. M26U is also
     // metroline (M* prefix) → route_desc carries both labels.

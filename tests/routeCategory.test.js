@@ -19,23 +19,22 @@ describe('classifyRoute — pattern → category', () => {
     expect(classifyRoute({ route_short_name: 'TE-OG' })).toEqual([{ id: 'school', label: 'Transport Elevi' }]);
   });
 
-  it('classifies M7x school buses whose long_name starts with "TE\\d+ Floresti" as "Transport Elevi"', () => {
-    // M7x routes are 1:many — they match school (M7x prefix) AND
-    // metroline (M* prefix). Pin both categories in the result.
+  it('classifies M7x routes as metroline only (school M7x regex dropped per PR review)', () => {
+    // Per PR review: we dropped the M7x-specific short_name regex from
+    // the school pattern. M7x routes are metroline-shaped (M* prefix)
+    // and they fall through to metroline. Operationally they ARE Floresti
+    // metroline services that also serve school destinations, but the
+    // signal isn't strong enough to badge them as "school" automatically.
+    // If CTP later adds "elevi" to the long_name explicitly, the
+    // /elevi/i substring check picks it up.
     expect(classifyRoute({
       route_short_name: 'M76A',
       route_long_name: 'TE2 Floresti str. Somesului',
-    })).toEqual([
-      { id: 'school', label: 'Transport Elevi' },
-      { id: 'metroline', label: 'Metropolitana' },
-    ]);
+    })).toEqual([{ id: 'metroline', label: 'Metropolitana' }]);
     expect(classifyRoute({
       route_short_name: 'M75B',
       route_long_name: 'TE1F',
-    })).toEqual([
-      { id: 'school', label: 'Transport Elevi' },
-      { id: 'metroline', label: 'Metropolitana' },
-    ]);
+    })).toEqual([{ id: 'metroline', label: 'Metropolitana' }]);
   });
 
   it('catches "Elevi" substring case-insensitively across all 3 fields', () => {
@@ -102,24 +101,20 @@ describe('classifyRoute — pattern → category', () => {
   });
 
   it('returns 1:many for routes that match multiple categories (M76A = school + metroline)', () => {
-    // The signature case: M76A is a Floresti metroline (M* prefix) that
-    // happens to also be a school bus (long_name starts with TE\d+
-    // Floresti). Both categories apply; classification returns both.
+    // New 1:many signature case: a route whose long_name AND route_desc
+    // both carry category signals. e.g. route_id='X' has long_name with
+    // "Transport Elevi" + short_name "M26" with "untold" in route_desc.
+    // Use a synthetic shape that exercises the comma-join without the
+    // M7x-specific M76A case (see the dedicated M7x test for that
+    // route's reduced-to-metroline classification).
     const result = classifyRoute({
-      route_short_name: 'M76A',
-      route_long_name: 'TE2 Floresti str. Somesului - Liceul D. Tautan',
+      route_short_name: 'X1',
+      route_long_name: 'Str. X - Liceul Y (Transport Elevi)',
+      route_desc: 'Untold',
     });
     expect(result).toEqual([
       { id: 'school', label: 'Transport Elevi' },
-      { id: 'metroline', label: 'Metropolitana' },
-    ]);
-    // Same for any M7x school bus.
-    expect(classifyRoute({
-      route_short_name: 'M75A',
-      route_long_name: 'TE1 Floresti str. Avram Iancu',
-    })).toEqual([
-      { id: 'school', label: 'Transport Elevi' },
-      { id: 'metroline', label: 'Metropolitana' },
+      { id: 'festival', label: 'Untold' },
     ]);
   });
 
@@ -137,13 +132,14 @@ describe('classifyRoute — pattern → category', () => {
     expect(CATEGORIES.map((c) => c.id)).toEqual([
       'special', 'school', 'festival', 'night', 'airport', 'metroline',
     ]);
-    // For M76A (school + metroline), school comes first because it's
-    // declared earlier in CATEGORIES.
+    // For a school + festival 1:many case, school comes first because
+    // it's declared earlier in CATEGORIES.
     const result = classifyRoute({
-      route_short_name: 'M76A',
-      route_long_name: 'TE2 Floresti ...',
+      route_short_name: 'X1',
+      route_long_name: 'Str. X - Liceul Y (Transport Elevi)',
+      route_desc: 'Untold',
     });
-    expect(result.map((c) => c.id)).toEqual(['school', 'metroline']);
+    expect(result.map((c) => c.id)).toEqual(['school', 'festival']);
   });
 
   it('treats missing/undefined fields as empty strings', () => {
@@ -313,10 +309,18 @@ describe('applyRouteCategory — orchestrator entry point', () => {
     expect(routes[1].route_desc).toBe(''); // regular urban
   });
 
-  it('classifies BEFORE cleanup, so M76A gets both school + metroline', () => {
-    // The signature case for 1:many. If classification ran AFTER cleanup
-    // (which strips "TE2 Floresti " from long_name), the school signal
-    // would be lost. Order matters.
+  it('classifies BEFORE cleanup so a 1:many case survives the cleanup pass', () => {
+    // Regression test for the order-change. If classification ran AFTER
+    // cleanup, signals embedded in long_name (e.g. "Transport Elevi" or
+    // a parenthetical) would be stripped before classification could
+    // match them. The 1:many route here exercises a long_name signal
+    // ("Transport Elevi" inside parens) plus a short_name signal (M*
+    // prefix for metroline) — both must survive.
+    //
+    // Note: M76A itself (the original 1:many case) is no longer 1:many
+    // because we dropped the M7x short_name regex from the school pattern.
+    // This test uses a synthetic shape that still produces 1:many via the
+    // long_name "elevi" check + short_name M* check.
     const allStopTimeRows = [
       { trip_id: 't-145', stop_id: 'A', stop_sequence: 0 },
       { trip_id: 't-145', stop_id: 'B', stop_sequence: 1 },
@@ -325,8 +329,8 @@ describe('applyRouteCategory — orchestrator entry point', () => {
     const routes = [
       {
         route_id: '145',
-        route_short_name: 'M76A',
-        route_long_name: 'TE2 Floresti str. Somesului - Liceul D. Tautan',
+        route_short_name: 'M99',
+        route_long_name: 'Some Endpoint - Liceul X (Transport Elevi)',
         route_desc: '',
       },
     ];
@@ -339,9 +343,6 @@ describe('applyRouteCategory — orchestrator entry point', () => {
     // route_desc is comma-separated in CATEGORIES order: school first,
     // metroline second.
     expect(routes[0].route_desc).toBe('Transport Elevi, Metropolitana');
-    // long_name is cleaned AFTER classification (signal preserved for the
-    // school-pattern check).
-    expect(routes[0].route_long_name).toBe('str. Somesului - Liceul D. Tautan');
   });
 
   it('falls back to stop_times when long_name is empty after cleanup', () => {
@@ -408,11 +409,14 @@ describe('applyRouteCategory — orchestrator entry point', () => {
   });
 
   it('emits multi-network count in INFO when 1:many cases fire', () => {
+    // Synthetic 1:many case: short_name M* (metroline) + long_name with
+    // "Transport Elevi" (school). After we dropped the M7x short_name
+    // regex, this is the canonical 1:many fixture.
     const allStopTimeRows = [];
     const tripToRoute = new Map();
     const routes = [
-      { route_id: '145', route_short_name: 'M76A', route_long_name: 'TE2 Floresti ...', route_desc: '' },
-      { route_id: '146', route_short_name: 'M77A', route_long_name: 'TE3 Floresti ...', route_desc: '' },
+      { route_id: '145', route_short_name: 'M99', route_long_name: 'Some Endpoint - Liceul X (Transport Elevi)', route_desc: '' },
+      { route_id: '146', route_short_name: 'M98', route_long_name: 'Other Endpoint - Scoala Y (Transport Elevi)', route_desc: '' },
     ];
     const warnings = [];
     applyRouteCategory({
