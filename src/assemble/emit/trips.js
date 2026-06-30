@@ -505,34 +505,40 @@ export function reconcileTripsAndStopTimes(input) {
           { route: routeShortName, subtype, inIsPlaceholder, outIsPlaceholder, patternsAsymmetric },
         );
       }
-      // After all tier resolution (exact-both, swap-exact-both,
-      // swap-fuzzy-both, etc.): when the CSV ↔ catalog mapping is clean,
-      // the CSV's in/out labels are a more accurate "Start - End"
-      // descriptor than whatever Tranzy left in route_long_name
-      // (especially when the catalog is stale and just uses a TE code
-      // or an outdated terminal pair). Rewrite the field so
-      // downstream consumers see the operator-published terminals.
+      // After all tier resolution (exact-both, exact-one, fuzzy-*,
+      // swap-*, no-match): always rewrite `route_long_name` from CSV
+      // in/out when BOTH labels are present. The CSV is the operator's
+      // authoritative source for terminal labels — Tranzy's catalog
+      // field is often stale (route 19: Tranzy says "P-ta M. Viteazul -
+      // Str. E. Quinet" but the actual stops are Pod Traian → E.Quinet
+      // Sud, per CSV) or uses depot-relative origins ("Disp. X") that
+      // confuse riders. CSV labels reflect what the operator publishes
+      // in their timetable headers.
       //
-      // Guarded to clean resolutions only — Group B (no-match with
-      // catalog-out-of-date / csv-placeholder / asymmetric) is left
-      // alone because the CSV terminals there don't correspond to any
-      // trajectory that exists in the catalog.
+      // Direction order follows CTP's column convention (col 0 = origin
+      // of dir 0 buses = start; col 1 = origin of dir 1 buses = end).
+      // Tranzy's direction_id mapping is authoritative (dir 0 vs dir 1
+      // stays Tranzy's contract for downstream consumers — including
+      // the GTFS-RT feed, which keys on Tranzy's ids). When a swap is
+      // detected (CSV col 0 actually matches catalog dir 1's first
+      // stop), reverse the label order so the output still describes
+      // the line in the dir 0 → dir 1 convention.
       //
-      // Cross-direction cases (swap-*) get an extra guard: only
-      // rewrite when the two catalog patterns SHARE an endpoint stop
-      // (symmetric). When the patterns have 4 distinct terminal names
-      // (route 30 case), the operator's CSV describes a corridor that
-      // the catalog's two patterns don't connect — rewriting would
-      // produce a route_long_name that consumers can't navigate.
-      if (tierMatched && (tier === 'exact-both' || tier === 'swap-exact-both' || tier === 'swap-fuzzy-both')) {
-        const isCrossDir = tier !== 'exact-both';
-        const symmetric = !isCrossDir || patternsShareEndpoint(plan0?.orderedStops, plan1?.orderedStops);
-        if (symmetric) {
-          const rewritten = `${inLabel} - ${outLabel}`;
-          if (routeRow.route_long_name !== rewritten) {
-            routeRow.route_long_name = rewritten;
-            rewrittenLongNames++;
-          }
+      // No tier filter — fire for any CSV (including no-match cases
+      // where neither Tranzy nor Transitous's pattern contains the CSV
+      // terminals, e.g. route 19, route 42). For those, the CSV is the
+      // only authoritative source and the swap-detection fallback to
+      // "no swap" is the CTP convention. No symmetry check either —
+      // CSV priority means trusting the operator's labels even when the
+      // catalog has 4 distinct terminal names (the route 30 hypothetical
+      // where dir 0 and dir 1 patterns don't connect).
+      if (inLabel && outLabel) {
+        const rewritten = directionReversed
+          ? `${outLabel} - ${inLabel}`
+          : `${inLabel} - ${outLabel}`;
+        if (routeRow.route_long_name !== rewritten) {
+          routeRow.route_long_name = rewritten;
+          rewrittenLongNames++;
         }
       }
       if (summary) localWarnings.push(summary);
@@ -744,7 +750,16 @@ export function normalizeStopName(s) {
   if (!s) return '';
   return s.toString().toLowerCase()
     .replace(/ă/g, 'a').replace(/â/g, 'a').replace(/î/g, 'i')
-    .replace(/ș/g, 's').replace(/ț/g, 't');
+    .replace(/ș/g, 's').replace(/ț/g, 't')
+    // Collapse punctuation followed by whitespace ("E. Quinet" vs
+    // "E.Quinet") so labels that differ only in spacing after a
+    // period compare equal. Route 19's CSV "E. Quinet Sud" and
+    // Tranzy's "E.Quinet Sud" hit this — without normalization, the
+    // tier fell back to "exact-one" (whitespace mismatch) and the
+    // route_long_name rewrite never fired.
+    .replace(/([.,;:])\s+/g, '$1')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 export function terminalNamesMatch(a, b) {
@@ -791,37 +806,13 @@ export function terminalNamesMatch(a, b) {
 }
 
 /**
- * Check whether two catalog patterns share an endpoint stop name.
- * Returns true if dir 0's first OR last stop appears anywhere in
- * dir 1's pattern, OR vice versa. Used as the symmetry guard before
- * rewriting route_long_name from CSV in/out on cross-direction
- * resolutions — if patterns have 4 distinct terminal names (route 30
- * case), the CSV's corridor doesn't match the catalog's two patterns.
- *
- * Diacritic-insensitive so "P-ța Gării Sud" matches "P-ta Garii Sud"
- * across the two patterns.
+ * (Removed: patternsShareEndpoint — was used as the symmetry guard
+ * for cross-direction CSV rewrites. Dropped when the rewrite rule was
+ * changed to "always use CSV when available, swap-detection handles
+ * direction" — CSV priority trumps the 4-distinct-terminals edge case.
+ * Kept here as a placeholder comment so future readers don't grep for
+ * a function that no longer exists.)
  */
-function patternsShareEndpoint(orderedStops0, orderedStops1) {
-  if (!Array.isArray(orderedStops0) || !Array.isArray(orderedStops1)
-      || orderedStops0.length === 0 || orderedStops1.length === 0) {
-    return false;
-  }
-  const names1 = new Set(
-    orderedStops1.map((s) => s?.name).filter(Boolean).map(normalizeStopName)
-  );
-  const d0First = orderedStops0[0]?.name;
-  const d0Last = orderedStops0[orderedStops0.length - 1]?.name;
-  if (d0First && names1.has(normalizeStopName(d0First))) return true;
-  if (d0Last && names1.has(normalizeStopName(d0Last))) return true;
-  const names0 = new Set(
-    orderedStops0.map((s) => s?.name).filter(Boolean).map(normalizeStopName)
-  );
-  const d1First = orderedStops1[0]?.name;
-  const d1Last = orderedStops1[orderedStops1.length - 1]?.name;
-  if (d1First && names0.has(normalizeStopName(d1First))) return true;
-  if (d1Last && names0.has(normalizeStopName(d1Last))) return true;
-  return false;
-}
 
 /**
  * Find the first stop in `pattern` whose name matches `label` (exact or

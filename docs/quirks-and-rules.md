@@ -175,34 +175,70 @@ section below for the alternative use of swap detection.
 
 ### `route_long_name` rewrite from CSV in/out
 
-When the CSV ↔ catalog resolution is clean (`exact-both`,
-`swap-exact-both`, or `swap-fuzzy-both`), the CSV's `in/out_stop_name`
-labels are a more accurate "Start - End" descriptor than whatever
-Tranzy/Transitous left in `route_long_name` (especially when the
-catalog is stale and uses a TE code or outdated terminal pair).
-The validation tier's resolution drives a side-effect: rewrite
-`route_long_name` to `"${in_stop_name} - ${out_stop_name}"` so
-downstream consumers see the operator-published terminals.
+**Rule** (Marius's design, 2026-06-30): `route_long_name` is the
+CSV's `in/out_stop_name` pair, in catalog direction order, whenever
+the CSV provides both labels. The CSV is the operator's authoritative
+source for terminal labels — Tranzy/Transitous's catalog field is
+often stale or uses depot-relative origins ("Disp. X") that confuse
+riders. CSV labels reflect what CTP publishes in their timetable
+headers.
 
-Guards:
+**Direction order**: CTP's column convention (col 0 = origin of
+col 0 buses = dir 0; col 1 = origin of col 1 buses = dir 1) UNLESS
+a swap is detected (CSV col 0 actually matches catalog dir 1's
+first stop, not dir 0's). Tranzy's direction_id mapping is
+authoritative — dir 0 vs dir 1 stays Tranzy's contract for downstream
+consumers (including the GTFS-RT feed, which keys on Tranzy's ids).
 
-- Only fires on clean resolutions (`exact-both`, `swap-exact-both`,
-  `swap-fuzzy-both`). Group B (no-match with `catalog-out-of-date` /
-  `csv-placeholder` / asymmetric) is left alone because the CSV
-  terminals don't correspond to any trajectory that exists in the
-  catalog.
-- **Cross-direction cases** (swap-*) get an extra symmetry guard via
-  `patternsShareEndpoint()`: only rewrite when the two catalog
-  patterns SHARE an endpoint stop name. When the patterns have 4
-  distinct terminal names (route 30 case), the operator's CSV
-  describes a corridor the catalog's two patterns don't connect —
-  rewriting would produce a `route_long_name` that consumers can't
-  navigate.
+**No tier filter** — fires whenever BOTH `in_stop_name` and
+`out_stop_name` are present, regardless of whether the catalog has a
+matching pattern. For routes where neither Tranzy's nor Transitous's
+pattern contains the CSV terminals (e.g. route 19, route 42 — both
+catalogs use a different corridor than the CSV), the CSV is the only
+authoritative source and the swap-detection falls back to "no swap"
+(the CTP convention). The symmetry guard (`patternsShareEndpoint()`)
+was removed — CSV priority means trusting the operator's labels even
+when the catalog has 4 distinct terminal names (the route 30 case).
+
+**Rewrite order** in the orchestrator:
+
+1. CSV in/out (priority)
+2. Stop sequence — `${first stop} - ${last stop}` of the longest
+   trip (when CSV is unavailable or this code path is taken after
+   the CSV rewrite)
+3. Tranzy's value (cleaned) — last resort
+
+**Concrete examples** from the live build (with the new rule
+applied):
+
+| route_short_name | Tranzy's `route_long_name` | CSV `in/out_stop_name` | After rewrite |
+| --- | --- | --- | --- |
+| 19 | Disp. Grigorescu - P-ta M. Viteazul Sud | Pod Traian / E. Quinet Sud | Pod Traian - E. Quinet Sud |
+| 42 | Disp. Grigorescu - Dacia Service | Pod Traian / Biserica Campului | Pod Traian - Biserica Campului |
+| 30 | Cart. Grigorescu - Str. Aurel Vlaicu | Disp. Grigorescu / Disp. IRA | Disp. IRA - Disp. Grigorescu (swap detected) |
+
+For routes 19 and 42, Tranzy's catalog has a different corridor than
+the CSV — neither Tranzy's dir 0/1 patterns contain the CSV
+terminals. Old tier-based filter would have skipped the rewrite
+(`tier = no-match`); new rule fires and uses the CSV labels, which
+match what CTP actually publishes on their website.
+
+For route 30, CSV col 0 ("Disp. Grigorescu") matches Tranzy dir 1's
+first stop ("EXPO Transilvania") — swap detected. CSV labels are
+used in reversed order to match the catalog's dir 0 → dir 1
+convention. Note that Tranzy's dir 1 first stop is actually
+"EXPO Transilvania", not "Disp. Grigorescu" — the fuzzy match here
+works because Tranzy's dir 1 *also* ends at a depot whose name
+contains "Grigorescu" (or similar — see the swap-detection INFO line
+for the exact match). Operator review recommended for routes where
+the CSV terminals are depot names ("Disp. X") because the published
+`route_long_name` will surface those depot names to consumers
+instead of passenger stops.
 
 Build log emits one INFO line per rewrite pass:
 
 ```
-routes: 46 route_long_name(s) rewritten from CSV in/out (catalog was stale — pattern traversal found a clean resolution, CSV terminals are more accurate).
+routes: 106 route_long_name(s) rewritten from CSV in/out (catalog was stale — pattern traversal found a clean resolution, CSV terminals are more accurate).
 ```
 
 A high rewrite count is normal when the catalog's `route_long_name`
@@ -213,7 +249,7 @@ realign their catalog.
 how many `(route, dir)` pairs used fuzzy (not exact) matching:
 
 ```
-origin validation: 47 (route, dir) pair(s) used fuzzy word-token matching to align catalog ↔ CSV origin labels
+origin validation: 52 (route, dir) pair(s) used fuzzy word-token matching to align catalog ↔ CSV origin labels
 ```
 
 A high count means the upstream sources use different naming

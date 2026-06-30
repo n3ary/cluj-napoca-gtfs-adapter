@@ -595,18 +595,34 @@ describe('applyRouteCategory — desc strategy', () => {
   it('combines cleaned desc with stripped parenthetical when both contribute unique info', () => {
     // Synthesize: cleanedDesc has unique info AND long_name has a
     // stripped parenthetical. Both should land in desc with a separator.
+    // Terminals use 4+ char tokens ("Garii", "Campului", "Someșului")
+    // so the structural-check heuristic can find them on the route
+    // pattern via tokenOverlap.
     const routes = [
       {
         route_id: 'X',
         route_short_name: 'X1',
-        route_long_name: 'A - B (note 1)',
-        route_desc: 'C - D',
+        route_long_name: 'P-ta Garii - Str. Somesului (note 1)',
+        route_desc: 'P-ta Garii - Str. Campului',
       },
     ];
+    // Build a minimal stop_times fixture where the desc's terminals
+    // ("P-ta Garii" + "Str. Campului") ARE on the route pattern.
+    const allStopTimeRows = [
+      { trip_id: 't-X-a', stop_id: 'S1', stop_sequence: 0 },
+      { trip_id: 't-X-a', stop_id: 'S2', stop_sequence: 1 },
+      { trip_id: 't-X-a', stop_id: 'S3', stop_sequence: 2 },
+    ];
+    const tripToRoute = new Map([['t-X-a', 'X']]);
+    const stopsByStopId = new Map([
+      ['S1', { stop_name: 'P-ta Garii' }],
+      ['S2', { stop_name: 'Str. Campului' }],
+      ['S3', { stop_name: 'Str. Somesului' }],
+    ]);
     const warnings = [];
-    applyRouteCategory({ routes, warnings });
-    expect(routes[0].route_long_name).toBe('A - B');
-    expect(routes[0].route_desc).toBe('C - D | Note 1');
+    applyRouteCategory({ routes, allStopTimeRows, tripToRoute, stopsByStopId, warnings });
+    expect(routes[0].route_long_name).toBe('P-ta Garii - Str. Somesului');
+    expect(routes[0].route_desc).toBe('P-ta Garii - Str. Campului | Note 1');
   });
 
   it('title-cases parenthetical content (lowercase → first letter caps)', () => {

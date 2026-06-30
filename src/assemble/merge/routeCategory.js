@@ -459,16 +459,11 @@ function getRouteStopNames({ routeId, allStopTimeRows, tripToRoute, stopsByStopI
  * service variant / historical headsign) and we should keep the desc.
  * If it doesn't, the desc's destination is stale and we drop it.
  *
- * Returns true (stale) when:
- *   - both cleanedDesc and cleanedLong have the " - " separator,
- *   - cleanedDesc has no mid-string parens (parens carry annotation info),
- *   - the first terminals match (desc's terminal is on this route),
- *   - the second terminal does NOT appear anywhere on this route.
+ * Returns true (stale) when EITHER terminal is not on this route's
+ * pattern — the desc is referencing a stop the line doesn't serve.
  *
- * Returns false (keep) when:
- *   - format / parens / first-terminal checks fail (different signal),
- *   - the second terminal DOES appear on the route's pattern (operator
- *     intentionally references it).
+ * Returns false (keep) when BOTH terminals appear on the route's
+ * pattern — the operator intentionally references real stops.
  */
 function isStaleLongNameVariant(cleanedDesc, cleanedLong, routeStopNames) {
   if (!cleanedDesc || !cleanedLong) return false;
@@ -479,22 +474,26 @@ function isStaleLongNameVariant(cleanedDesc, cleanedLong, routeStopNames) {
   if (descParts.length < 2) return false;
   const [descFirst, descSecond] = descParts;
 
-  const longFirst = cleanedLong.split(' - ')[0];
-
-  // Both terminals of desc must be on the same route as the long_name's
-  // terminals. First terminal fuzzy-match is the "is this the same
-  // line?" check (handles "P-ta M. Viteazul" vs "P-ta M. Viteazul Vest").
-  if (!tokenOverlap(descFirst, longFirst)) return false;
-
-  // Second terminal is the structural check: does it appear on the route?
-  // If we have no pattern data (routeStopNames is null/undefined), fall
-  // back to the format-only check (treating as stale — the previous
-  // behavior, safer default).
+  // Structural check: BOTH desc terminals must appear on this route's
+  // pattern. We previously required descFirst to fuzzy-match longFirst
+  // (the "same line?" check) AND descSecond to be on the route — but
+  // that misses the "completely different line" case where Tranzy's
+  // desc has neither terminal on this route. e.g. route 42's desc
+  // "P-ta M. Viteazul - Str. Campului" — "P-ta M. Viteazul" isn't on
+  // route 42 at all (it's "P-ța M.Viteazu Sosire", different token),
+  // yet the previous heuristic kept the desc because the first-terminal
+  // fuzzy-match happened to fail and we treated "fail" as "not stale".
+  //
+  // If we have no pattern data (routeStopNames is null/undefined),
+  // fall back to "treat as stale" — the safer default.
   if (!routeStopNames) return true;
+  let firstOnRoute = false;
+  let secondOnRoute = false;
   for (const stopName of routeStopNames) {
-    if (tokenOverlap(descSecond, stopName)) return false;
+    if (tokenOverlap(descFirst, stopName)) firstOnRoute = true;
+    if (tokenOverlap(descSecond, stopName)) secondOnRoute = true;
   }
-  return true;
+  return !(firstOnRoute && secondOnRoute);
 }
 
 /**
