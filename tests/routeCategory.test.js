@@ -677,6 +677,54 @@ describe('applyRouteCategory — desc strategy', () => {
     expect(routes[0].route_desc).toBe('Traseu M21');
   });
 
+  it('drops stale long_name variant from desc (Tranzy desc has different destination than long_name)', () => {
+    // Live-data bug: Tranzy publishes a desc whose terminal pair differs
+    // from long_name (e.g. line was restructured, only one of the two
+    // got updated). Without the stale-detection guard, cleanedDesc !=
+    // cleanedLong would surface the contradictory terminal to consumers
+    // (route 23's long_name="P-ta M. Viteazul - C.U.G" but
+    // desc="P-ta M. Viteazul - EMERSON" — confusing riders).
+    const routes = [
+      {
+        route_id: '23',
+        route_short_name: '23',
+        route_long_name: 'P-ta M. Viteazul - C.U.G',
+        route_desc: 'P-ta M. Viteazul - EMERSON',
+      },
+      {
+        route_id: '21',
+        route_short_name: '21',
+        route_long_name: 'P-ta M. Viteazul Vest - Dacia Service',
+        route_desc: 'P-ta M. Viteazul - Cart. Buna Ziua',
+      },
+      // Parenthetical content (88A): the heuristic must NOT drop this,
+      // because the "(traseu M21)" annotation is real info.
+      {
+        route_id: '88A',
+        route_short_name: '88A',
+        route_long_name: 'A - B (traseu M21)',
+        route_desc: 'A - B (traseu M21)',
+      },
+      // D51: long_name is just a code, desc has the real terminal info.
+      // The heuristic must NOT drop this.
+      {
+        route_id: 'D51',
+        route_short_name: 'D51',
+        route_long_name: 'D51',
+        route_desc: 'P-ta Mihai Viteazu - Gilau',
+      },
+    ];
+    const warnings = [];
+    applyRouteCategory({ routes, warnings });
+    // 23 and 21: stale variants dropped.
+    expect(routes[0].route_desc).toBe(''); // route 23
+    expect(routes[1].route_desc).toBe(''); // route 21
+    // 88A: parenthetical content preserved.
+    expect(routes[2].route_desc).toBe('Traseu M21');
+    // D51: terminal info preserved (long_name is just the code).
+    expect(routes[3].route_desc).toBe('P-ta Mihai Viteazu - Gilau');
+  });
+
   it('appends non-category parenthetical to categorized routes (TE + Floresti)', () => {
     // Marius's PR feedback: "route_desc default = category labels +
     // captured parenthetical content (human-readable title case), only

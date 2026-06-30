@@ -3,6 +3,9 @@
  *
  * Single source of truth for which network each route belongs to and how
  * to clean up Tranzy's messy `route_long_name` into start-end format.
+ */
+
+/**
  * The classifier runs once at assemble time; consumers (neary) just read
  * the structured fields from `routes.txt` + `networks.txt` +
  * `route_networks.txt` and don't have to parse free-text signals.
@@ -366,6 +369,62 @@ function titleCaseAnnotation(s) {
 }
 
 /**
+ * Stricter variant of `terminalNamesMatch` for the stale-desc heuristic.
+ * Requires both strings to have at least one substantial token (length
+ * ≥4 chars) AND any token overlap. The "empty tokens → true" fallback
+ * in terminalNamesMatch is wrong for stale-detection because a single
+ * short letter like "C" or "A" would otherwise be treated as matching.
+ */
+function firstTerminalsMatch(a, b) {
+  const tokenize = (s) => {
+    const norm = (s || '').toString().toLowerCase()
+      .replace(/ă/g, 'a').replace(/â/g, 'a').replace(/î/g, 'i')
+      .replace(/ș/g, 's').replace(/ț/g, 't');
+    return new Set((norm.match(/[a-z0-9]+/g) ?? []).filter((t) => t.length >= 4));
+  };
+  const tokensA = tokenize(a);
+  const tokensB = tokenize(b);
+  if (tokensA.size === 0 || tokensB.size === 0) return false;
+  for (const t of tokensA) {
+    if (tokensB.has(t)) return true;
+  }
+  return false;
+}
+
+/**
+ * Detect when Tranzy's `route_desc` is just a stale long_name variant —
+ * a string in "X - Y" format where X matches `route_long_name`'s
+ * first terminal and the only "unique info" is a different (stale)
+ * destination. Treats the desc as not worth surfacing.
+ *
+ * Why: live Tranzy data shows ~50 routes where Tranzy publishes a
+ * `route_desc` whose terminal pair differs from `route_long_name`
+ * (the line was restructured and only one of the two was updated).
+ * Without this check, applyRouteCategory's `descHasUniqueInfo`
+ * branch preserves the stale desc as "unique info" — surfacing
+ * contradictory terminals to consumers (e.g. route 23 shows
+ * `route_long_name="P-ta M. Viteazul - C.U.G"` AND
+ * `route_desc="P-ta M. Viteazul - EMERSON"`, confusing riders).
+ *
+ * Returns true when the desc looks like a stale long_name variant
+ * (long_name format with matching first terminal, no parenthetical
+ * extras). Returns false when the desc either:
+ *   - has no " - " separator (it's not a long_name-format string —
+ *     e.g. parenthetical content like "Traseu M21"),
+ *   - contains parens (it has additional annotation info),
+ *   - has a different first terminal than cleanedLong.
+ */
+function isStaleLongNameVariant(cleanedDesc, cleanedLong) {
+  if (!cleanedDesc || !cleanedLong) return false;
+  if (!cleanedDesc.includes(' - ') || !cleanedLong.includes(' - ')) return false;
+  // Mid-string parens carry annotation info — keep them.
+  if (/[()]/.test(cleanedDesc)) return false;
+  const descFirst = cleanedDesc.split(' - ', 1)[0];
+  const longFirst = cleanedLong.split(' - ', 1)[0];
+  return firstTerminalsMatch(descFirst, longFirst);
+}
+
+/**
  * Apply classification + cleanup + fallback to all route rows in
  * place. Single orchestrator-facing entry point.
  *
@@ -537,7 +596,8 @@ export function applyRouteCategory({ routes, allStopTimeRows = [], tripToRoute, 
       //      Mostly cosmetic; preserves the "desc is a mirror of
       //      long_name" behavior for routes where Tranzy duplicated
       //      the same string in both fields.
-      const descHasUniqueInfo = cleanedDesc && cleanedDesc !== cleanedLong;
+      const descHasUniqueInfo = cleanedDesc && cleanedDesc !== cleanedLong
+        && !isStaleLongNameVariant(cleanedDesc, cleanedLong);
 
       if (descHasUniqueInfo) {
         // cleaned desc has info not in long_name.
@@ -550,8 +610,9 @@ export function applyRouteCategory({ routes, allStopTimeRows = [], tripToRoute, 
           descFromCleanedCount++;
         }
       } else if (dedupedStripped.length > 0) {
-        // cleaned desc is just a mirror of long_name — surface the
-        // parenthetical content as the unique signal.
+        // cleaned desc is just a mirror of long_name (or a stale
+        // long_name variant) — surface the parenthetical content as
+        // the unique signal.
         row.route_desc = dedupedStripped.join(', ');
         descFromStrippedCount++;
       } else {
@@ -559,6 +620,11 @@ export function applyRouteCategory({ routes, allStopTimeRows = [], tripToRoute, 
         // content to surface — leave route_desc empty. Marius's
         // PR feedback: a desc that's just a copy of long_name is
         // noise for the consumer (neary, OTP, Google Maps), not info.
+        // This also covers stale long_name variants (Tranzy's desc
+        // carries a different terminal pair than long_name — e.g.
+        // route 23's "P-ta M. Viteazul - EMERSON" vs long_name
+        // "P-ta M. Viteazul - C.U.G"; without the stale-variant check
+        // we'd surface the contradictory terminal to consumers).
         row.route_desc = '';
       }
     }
