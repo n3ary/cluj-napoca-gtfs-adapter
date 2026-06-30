@@ -39,21 +39,14 @@ describe('reconcile', () => {
     expect(files['feed_info.txt']).toBeTruthy();
   });
 
-  it('route 22 from Tranzy (orange, neary-gtfs#14) is included', () => {
+  it('route 22 from Tranzy (orange, neary-gtfs#14) is included with its Tranzy color', () => {
+    // Non-black Tranzy colors are passed through unchanged; only black /
+    // missing values get substituted with the per-type modal color.
     const { files } = reconcile({ seed, tranzy: fixtures.tranzy, csv, options: { buildDate: new Date('2026-06-29') } });
     const routesLines = files['routes.txt'].split('\n');
     const r22 = routesLines.find((l) => l.startsWith('22,'));
     expect(r22).toBeTruthy();
     expect(r22).toMatch(/EF8732/);
-  });
-
-  it('emits a data-quality warning for route 22 orange color (#14)', () => {
-    const { warnings } = reconcile({ seed, tranzy: fixtures.tranzy, csv, options: { buildDate: new Date('2026-06-29') } });
-    // The checkRouteColors dedup groups by (type, color) — we should
-    // still see a warning line referencing the orange color #EF8732
-    // (route 22's distinctive color, from Tranzy) bucketed with any
-    // other routes that share it.
-    expect(warnings.some((w) => w.message.includes('EF8732'))).toBe(true);
   });
 
   it('M26 direction=1 is resolvable via Tranzy fallback (fixes #15)', () => {

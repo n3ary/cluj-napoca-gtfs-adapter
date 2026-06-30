@@ -139,6 +139,56 @@ CTP's `stop_code` field (the public-facing code shown on signage) is
 sometimes a Roman numeral ("II", "IV") rather than a digit. Don't parse it
 as `Number()` — it will silently produce `NaN`. Use it as an opaque string.
 
+### 6. `route_color` carries almost no per-route signal
+
+Verified live against `/routes` for CTP Cluj on 2026-06-30 (all 168 rows):
+
+| `route_type` | What Tranzy returns |
+|---|---|
+| 0 (tram, 4 routes) | `#f3513c` × 4 |
+| 3 (bus, 148 routes) | `#000` × 74, `#f3513c` × 68, plus 6 one-offs (`#693cf3`, `#ff0000`, `#fc002e`, `#002fff`, `#0d00ff`, `#1f807b`) |
+| 11 (trolleybus, 16 routes) | `#f3513c` × 9, `#000` × 4, `#1500ff`, `#0048ff`, `#000000` |
+
+Takeaways:
+
+- Tranzy does **not** publish a per-mode palette. Trams and buses share
+  `#f3513c` (the modal color across both), and ~80 routes ship as black
+  with no obvious distinguishing meaning.
+- `route_color` is sometimes the 3-char CSS shorthand (`#000`) the GTFS
+  spec doesn't permit; sometimes the full 6-char form (`#000000`); often
+  the leading `#` is present (also non-spec). Treat all of those as
+  equivalent and normalize to 6-char uppercase, no `#` (see
+  `normalizeColor()` in `src/assemble/merge/routes.js`).
+- Black (`#000` / `#000000`) is effectively Tranzy's "no preferred color"
+  sentinel — there's no signage rationale behind it. The adapter treats
+  it as missing and substitutes the per-type modal color. Non-black
+  one-offs are preserved as-is.
+- The per-type modals collide: all three modes (tram, bus, trolleybus)
+  have `#f3513c` as their most-frequent non-placeholder color, so a
+  naive substitution would publish a single-color feed with no visual
+  way to tell modes apart. The adapter resolves the collision at
+  publish time by **OKLCh hue rotation** (see
+  [`assemble-rules.md`](./assemble-rules.md) — `route_color` row):
+  the type with the most routes at the colliding color keeps it; each
+  remaining colliding type is rotated by `i·360°/N` around the OKLCh
+  wheel, then nudged in ±15° increments if needed to stay at least
+  0.15 OKLab away from every existing one-off color (and from the
+  other assigned modals). With current Tranzy data this yields
+  bus = `#F3513C`, trolleybus = `#00B147` (green), tram = `#248EFF`
+  (blue) — three perceptually distinct hues at the same perceived
+  lightness, none within 0.15 OKLab of any one-off color in the
+  catalog.
+
+### 7. `route_text_color` is always `null`
+
+Verified live against `/routes` for CTP Cluj on 2026-06-30: every one of
+168 routes returns `route_text_color: null`. The field is in the response
+shape but Tranzy doesn't populate it for this agency. The GTFS consumer
+default (`000000`) would produce black-on-black plates for the ~80 routes
+with dark `route_color`, so the adapter ignores the upstream value
+entirely and forces `FFFFFF` (white) for every row — see
+[`assemble-rules.md`](./assemble-rules.md).
+
 ## Rate-limit / retry behavior of the Node client
 
 | Server response | Client behavior |
@@ -160,8 +210,11 @@ endpoints sequentially in `fetchAll()`); revisit if you ever parallelize.
 
 - `GET /vehicles` — realtime. Out of scope for this static adapter; belongs
   to the realtime bridge repo described in `neary#108`.
-- `route_text_color` — passed through if present, but Cluj-Napoca's data
-  doesn't set it consistently.
+- `route_text_color` — always `null` for CTP Cluj (see Quirk 7); the
+  adapter ignores it and emits a uniform `FFFFFF` instead.
+- Tranzy's `route_color` value when it equals `#000` / `#000000` — see
+  Quirk 6; treated as a "no preferred color" sentinel and substituted
+  with the per-type modal color.
 - `agency_url`, `agency_phone`, etc. — passed through but not consulted.
 
 ## What we'd want from a future Tranzy

@@ -43,8 +43,8 @@ the *why*, not just the *what*.
 | `routes[].route_short_name` | **Tranzy** | Transitous seed | CSV URL filename | — | Why Tranzy: CTP city-hall promotes Tranzy; live source for short names. Why Transitous: a small set of legacy routes Tranzy doesn't carry. Why CSV last: the URL filename (`orar_35_lv.csv`) embeds the short name CTP publishes, but it's the weakest source. |
 | `routes[].route_long_name` | **Tranzy** | Transitous seed | CSV row 0 `route_long_name` | `route_short_name` | Why Tranzy: live renaming source. Why seed: curated long names. Why CSV row 0: rows 0 of the CSV carries the literal long-name string (e.g. `"Zorilor - Marasti"`), which is what CTP uses on their own timetable pages. |
 | `routes[].route_type` | **Tranzy** | Transitous seed | 3 (bus default) | — | Why Tranzy: Tranzy is CTP's promoted live source and the producer-of-record for what each route currently runs as. Why seed: routes Tranzy doesn't carry at all. Why bus default: Cluj is overwhelmingly buses (148 of 168 routes per current Tranzy catalog); if all upstream is missing the type, defaulting to bus is the least-wrong answer. Note: missing-vs-falsy matters here — `route_type=0` (tram) is a valid GTFS enum value, so this column uses `?? '3'` instead of `? : '3'` to preserve `0`. |
-| `routes[].route_color` | **Tranzy** (normalized to 6-char hex per GTFS spec) | Transitous seed | FFFFFF (GTFS default) | — | Why Tranzy: Tranzy inherits CTP's published color live. Why normalize: GTFS `Color` is a six-digit hex string; Tranzy occasionally returns 3-char CSS shorthand (e.g. `'000'`) which the spec doesn't permit — we expand to `'000000'` rather than pass through. Why seed: same source as Tranzy on this axis, but mdb-curated. Why `FFFFFF`: matches the [spec's consumer default](https://gtfs.org/documentation/schedule/reference/#routestxt) when omitted, so consumers see the same result whether the field is absent upstream or absent in this pipeline. |
-| `routes[].route_text_color` | **Tranzy** (normalized) | Transitous seed | **contrast-aware**: white on dark `route_color`, black on light | — | Why Tranzy/seed: same priority as `route_color`. Why contrast-aware fallback: the GTFS spec's consumer default for empty `route_text_color` is **black** (`000000`), which would produce black-on-black for the many Tranzy rows with dark `route_color` (`000000`, `002FFF`, etc.). The same spec requires the *producer* to ensure "sufficient contrast between route_color and route_text_color". Computing white-on-dark / black-on-light at publish time honors the contrast requirement without ever overriding an upstream-supplied value. |
+| `routes[].route_color` | **Tranzy** (normalized to 6-char hex per GTFS spec) — black/missing **substituted with the per-type modal color**, then **OKLCh hue-rotated if multiple types share the same modal**, with the rotation **nudged away from any existing one-off color** | Transitous seed (same rule applies) | per-type modal color | FFFFFF (GTFS default; only when the type has no modal) | Why Tranzy: Tranzy inherits CTP's published color live. Why normalize: GTFS `Color` is a six-digit hex string; Tranzy occasionally returns 3-char CSS shorthand (e.g. `'000'`) which the spec doesn't permit — we expand to `'000000'` rather than pass through. Why substitute black/missing: Tranzy's per-route colors carry no consistent signal (for buses the top two are `#000` × 74 and `#f3513c` × 68, with the rest one-offs); the modal non-black color per `route_type` is the only "this is what most routes of this mode look like" signal we can derive from data. Non-black one-offs are preserved as-is. Why OKLCh hue rotation on collisions: Tranzy's CTP catalog has tram + bus + trolleybus all centered on `#F3513C` — without skewing, the published feed has no visual way to tell modes apart. The type with the most routes at the colliding color keeps it (least churn); others get rotated `i·360°/N` around the OKLCh hue wheel, which preserves perceived lightness (so white text still has contrast) while moving genuinely different hues, not just lighter/darker shades. Why nudge away from one-offs: the naive `i·360°/N` rotation can land near an existing one-off (e.g. tram's +240° landing on `#6482FF` blue is OKLab-close to bus one-off `#002FFF`). The resolver searches outward from the ideal angle in ±15° steps and picks the first one ≥ 0.15 OKLab away from every other color in the catalog (one-offs + already-assigned modals). 0.15 is the "clearly different colors" threshold in OKLab distance. Why `FFFFFF` last resort: matches the [spec's consumer default](https://gtfs.org/documentation/schedule/reference/#routestxt) when omitted. |
+| `routes[].route_text_color` | **always `FFFFFF`** (uniform white) | — | — | — | Why uniform white: Tranzy returns `null` for `route_text_color` on every CTP route (verified 2026-06-30 across all 168 rows). After the per-type modal substitution, every background is dark enough that white is the only value satisfying the spec's contrast requirement across the catalog. Picking one value also keeps the feed visually consistent — there's no reason for one route's badge to read black and another white when the goal is to identify the route by its background color. |
 | `stops[].stop_id` | **Tranzy** | Transitous seed | — | — | Why Tranzy: Tranzy covers more of the network (~880 stops vs Transitous's ~750). Why seed: the legacy few hundred stops Tranzy doesn't carry. Tranzy and Transitous use **different id namespaces**, so this is effectively "union of both" with Tranzy iterated first. |
 | `stops[].stop_name` | **Tranzy** | Transitous seed | — | — | Why Tranzy: live signage source. Why seed: curated names. Why no CSV fallback: the CSV doesn't carry per-stop names. |
 | `stops[].stop_lat` / `stop_lon` | **Tranzy** | Transitous seed | — | — | Why Tranzy: GPS-surveyed live coordinates. Why seed: mdb-validated coordinate cleanup. Why no third fallback: a stop without coordinates is unusable — drop rather than guess. |
@@ -149,23 +149,16 @@ before merging the daily artifact:
    we drop silently and warn; full frequency-annotation parsing
    (`frequencies.txt`) is a future feature.
 
-3. **Route color doesn't match the type-default palette** — surfaces
-   `neary-gtfs#14` (Route 22 orange). Expected palette:
-   - `route_type=0` (tram) → `#3BAC2C`
-   - `route_type=3` (bus) → `#D24CAE`
-   - `route_type=11` (trolleybus) → `#3C4E9A`
-   - Any other color → warn "verify intentional exception"
-
-4. **Stop with empty `stop_lat` / `stop_lon`** — Tranzy occasionally
+3. **Stop with empty `stop_lat` / `stop_lon`** — Tranzy occasionally
    returns stops with coordinates as empty strings. Drop the stop from
    the patterns it's referenced in, or skip the route. Don't emit a
    trip whose stop sequence has a missing coordinate.
 
-5. **Multiple agencies in `agency.txt`** — surfaces `neary#87`'s
+4. **Multiple agencies in `agency.txt`** — surfaces `neary#87`'s
    validator concern. Single-agency feeds (like ours) should have exactly
    one row in `agency.txt`. Warn if not.
 
-6. **CSV row count mismatch with seed trip count** — if the seed
+5. **CSV row count mismatch with seed trip count** — if the seed
    publishes `N` trips for `(route, dir)` and CSV publishes `M` very
    different departure times, log both for visibility. We don't reconcile
    to the seed's count — CSV wins for trip count.
