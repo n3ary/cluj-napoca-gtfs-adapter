@@ -554,11 +554,11 @@ export function applyRouteCategory({ routes, allStopTimeRows = [], tripToRoute, 
         // parenthetical content as the unique signal.
         row.route_desc = dedupedStripped.join(', ');
         descFromStrippedCount++;
-      } else if (cleanedDesc) {
-        // Fallback: cleaned desc mirrors long_name.
-        row.route_desc = cleanedDesc;
-        descFromCleanedCount++;
       } else {
+        // cleaned desc mirrors long_name and there's no parenthetical
+        // content to surface — leave route_desc empty. Marius's
+        // PR feedback: a desc that's just a copy of long_name is
+        // noise for the consumer (neary, OTP, Google Maps), not info.
         row.route_desc = '';
       }
     }
