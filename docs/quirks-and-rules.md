@@ -94,7 +94,7 @@ service day. Routes where every cell is suspended get the
 
 ---
 
-## Origin label matching: exact / fuzzy / no-match
+## Origin label matching: exact / fuzzy / no-match (with pattern traversal)
 
 CTP's CSV carries two terminal-name labels in its metadata header
 (rows 3 and 4):
@@ -106,26 +106,107 @@ CTP's CSV carries two terminal-name labels in its metadata header
 - (The other terminal is the destination of that direction and is
   used as the headsign.)
 
-The adapter validates these against the resolved pattern's first
-stop using `terminalNamesMatch()` in `src/assemble/emit/trips.js`:
+The adapter validates these against the catalog pattern's stops
+using `findLabelInPattern()` + `terminalNamesMatch()` in
+`src/assemble/emit/trips.js`:
 
-1. **Exact match** — case-insensitive string equality after
-   lowercase + whitespace trim.
-2. **Word-token overlap** — split both names on word boundaries
-   (spaces, hyphens, parens, punctuation), filter to tokens ≥4
-   chars, accept if any token is shared.
-3. **Substring match** — accept if the normalized form of one
-   contains the other.
+1. **Pattern traversal** — search every stop in the pattern (not just
+   position 0). CTP sometimes publishes an origin that's mid-pattern
+   (M24: catalog dir 0 starts at "Disp. Bucium" but the CSV says col
+   0 origin is "Calea Floresti" further along the route).
+2. **Exact match** — diacritic-insensitive case-insensitive equality
+   after normalization (`ă/â→a, î→i, ș→s, ț→t`).
+3. **Word-token overlap** — split both names on word boundaries
+   (spaces, hyphens, parens, punctuation). Accept when EITHER:
+   - ≥2 shared tokens of length ≥4, OR
+   - ≥1 shared token of length ≥6.
 
-Reported as a 4-tier build-log classification:
+   The stricter "≥2 OR ≥6" rule (vs the older "≥1 of length ≥4")
+   prevents false positives on common transit prefixes like "Disp."
+   (4 chars, abbreviation for "Dispecerat" = depot). Without it,
+   "Disp. Grigorescu" would falsely match "Disp. IRA" because both
+   share "disp" — but those are different physical depots.
+
+Reported as a 5-tier build-log classification:
 
 | Tier | When | Action |
 |---|---|---|
-| `exact-both` | both directions exact | silent — perfect alignment |
-| `exact-one` | one exact, one fuzzy/no-match | warn, trust column convention |
-| `fuzzy-both` | both fuzzy | warn, trust column convention |
-| `fuzzy-one` | one fuzzy, one no-match | heavier warn, headsign falls back to `route_long_name` for the unmatched dir |
-| `no-match` | neither exact nor fuzzy | strongest warn, CSV trip times still used but no headsign is derived from CSV terminal names |
+| `exact-both` | both CSV terminals match somewhere in their respective patterns (any position, exact) | silent |
+| `exact-one` | one exact, one fuzzy/no-match | info, trust column convention |
+| `fuzzy-both` | both fuzzy matches found | info, trust column convention |
+| `fuzzy-one` | one fuzzy, one no-match | info, trust column convention |
+| `swap-exact-both` | cross-direction (col 0 ↔ dir 1, col 1 ↔ dir 0) both exact | info, direction_id unchanged (RT feed alignment) |
+| `swap-fuzzy-both` | cross-direction both fuzzy | info, direction_id unchanged |
+| `swap-partial` | one cross-pair exact/fuzzy, other doesn't match anywhere | warn, asymmetric — operator likely renamed one terminal |
+| `no-match` | neither same-direction nor cross-direction matches anywhere in any pattern | warn with categorized sub-type |
+
+### No-match sub-types (operator-actionable categorization)
+
+When the no-match tier fires, the warning carries one of three
+sub-types so the operator/Tranzy knows where to act:
+
+| Sub-type | When | Operator action |
+|---|---|---|
+| `csv-placeholder` | A CSV label looks like a generic term — either it appears as a substring of the CSV's own `route_long_name` (likely a placeholder) or it has no real stop-name tokens (e.g. "Cluj-Napoca", "M") | Fix the CSV |
+| `catalog-out-of-date` | CSV terminals look like real stops (no placeholder) but neither catalog pattern contains them | Ask Tranzy to update the stops for this route |
+| `no-match-asymmetric` | Catalog patterns for the two directions have different first stops AND neither is a placeholder | Ask Tranzy to realign the catalog |
+
+Live data examples (2026-06-30):
+
+| Route | Sub-type | Diagnosis |
+|---|---|---|
+| 30 | (swap-exact-both → asymmetric) | Catalog patterns have 4 distinct terminal names; CSV describes a Disp. Grigorescu ↔ Disp. IRA corridor the catalog doesn't connect. Operator: ask Tranzy to realign the route's two patterns. |
+| M26 | `csv-placeholder` | `in_stop_name = "Cluj-Napoca"` is a city name, not a stop (matches CSV's own `route_long_name` substring). Operator: fix the CSV. |
+| 29S | `catalog-out-of-date` | `in_stop_name = "Sf.Ioan"` and `out_stop_name = "Pod Traian"` are real stops but neither is in the seed's patterns for this route. Operator: ask Tranzy to add these stops. |
+| 46 | `swap-partial` | col 1 ("Giratie Drum Faget") fuzzy-matches dir 0 first stop; col 0 ("Opera") doesn't match anything. Asymmetric catalog. |
+
+### Why the warn-but-proceed strategy
+
+Trip direction is determined by **CSV column index** (col 0 = dir 0,
+col 1 = dir 1), not by the CSV header labels. So an origin-mismatch
+does NOT mean trips are going to the wrong direction — it means we
+can't trust the CSV's terminal name as a headsign fallback. We
+keep using catalog `direction_id` so the schedule stays aligned
+with the Tranzy RT feed (which uses Tranzy's catalog mapping).
+**We never flip `direction_id`** even when swap is detected — see
+the [route_long_name rewrite](#route-long_name-rewrite-from-csv)
+section below for the alternative use of swap detection.
+
+### `route_long_name` rewrite from CSV in/out
+
+When the CSV ↔ catalog resolution is clean (`exact-both`,
+`swap-exact-both`, or `swap-fuzzy-both`), the CSV's `in/out_stop_name`
+labels are a more accurate "Start - End" descriptor than whatever
+Tranzy/Transitous left in `route_long_name` (especially when the
+catalog is stale and uses a TE code or outdated terminal pair).
+The validation tier's resolution drives a side-effect: rewrite
+`route_long_name` to `"${in_stop_name} - ${out_stop_name}"` so
+downstream consumers see the operator-published terminals.
+
+Guards:
+
+- Only fires on clean resolutions (`exact-both`, `swap-exact-both`,
+  `swap-fuzzy-both`). Group B (no-match with `catalog-out-of-date` /
+  `csv-placeholder` / asymmetric) is left alone because the CSV
+  terminals don't correspond to any trajectory that exists in the
+  catalog.
+- **Cross-direction cases** (swap-*) get an extra symmetry guard via
+  `patternsShareEndpoint()`: only rewrite when the two catalog
+  patterns SHARE an endpoint stop name. When the patterns have 4
+  distinct terminal names (route 30 case), the operator's CSV
+  describes a corridor the catalog's two patterns don't connect —
+  rewriting would produce a `route_long_name` that consumers can't
+  navigate.
+
+Build log emits one INFO line per rewrite pass:
+
+```
+routes: 46 route_long_name(s) rewritten from CSV in/out (catalog was stale — pattern traversal found a clean resolution, CSV terminals are more accurate).
+```
+
+A high rewrite count is normal when the catalog's `route_long_name`
+is stale; operators should consider asking Tranzy/Transitous to
+realign their catalog.
 
 **Fuzzy-match summary**: the build emits a single INFO line counting
 how many `(route, dir)` pairs used fuzzy (not exact) matching:
@@ -137,13 +218,6 @@ origin validation: 47 (route, dir) pair(s) used fuzzy word-token matching to ali
 A high count means the upstream sources use different naming
 conventions for the same stops — operators should consider asking
 CTP / Transitous / Tranzy to align.
-
-**Why this matters**: trip direction is determined by **CSV column
-index** (col 0 = dir 0, col 1 = dir 1), not by the CSV header
-labels. So an origin-mismatch does NOT mean trips are going to the
-wrong direction. It means we can't trust the CSV's terminal name as
-a headsign fallback (we use the pattern's headsign or `route_long_name`
-instead).
 
 ---
 

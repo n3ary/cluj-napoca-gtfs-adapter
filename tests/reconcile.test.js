@@ -184,6 +184,150 @@ describe('reconcile', () => {
     // And the Tranzy fallback warning should be present.
     expect(warnings.some((w) => w.message.includes('Tranzy /trips fallback'))).toBe(true);
   });
+
+  it('emits networks.txt + route_networks.txt with category-classified routes (neary#125, neary#129)', () => {
+    // Synthesize a Tranzy response with one route per category so we can
+    // pin the file shape end-to-end without depending on the live catalog.
+    const tranzy = {
+      routes: [
+        { route_id: '93',  route_short_name: 'TE1',  route_long_name: 'Transport Elevi Manastur',             route_type: 3 },
+        { route_id: '145', route_short_name: 'M76A', route_long_name: 'TE2 Floresti str. Somesului',          route_type: 3 },
+        { route_id: '68',  route_short_name: 'M26U', route_long_name: 'Uzinei Electrice - Floresti / Cetate (untold)', route_type: 3 },
+        { route_id: '15',  route_short_name: '25N',  route_long_name: 'Str. Bucium - Str. Unirii',            route_type: 11 },
+        { route_id: '205', route_short_name: 'CS',   route_long_name: 'CURSA SPECIALA',                       route_type: 3 },
+        // Regular urban — no category, should NOT appear in route_networks.txt.
+        { route_id: '1',   route_short_name: '1',    route_long_name: 'Str. Bucium - P-ta 1 Mai',             route_type: 3 },
+      ],
+      stops: [],
+      trips: [
+        { trip_id: 't-93',  route_id: '93',  direction_id: 0, trip_headsign: '' },
+        { trip_id: 't-145', route_id: '145', direction_id: 0, trip_headsign: '' },
+        { trip_id: 't-68',  route_id: '68',  direction_id: 0, trip_headsign: '' },
+        { trip_id: 't-15',  route_id: '15',  direction_id: 0, trip_headsign: '' },
+        { trip_id: 't-205', route_id: '205', direction_id: 0, trip_headsign: '' },
+        { trip_id: 't-1',   route_id: '1',   direction_id: 0, trip_headsign: '' },
+      ],
+      stop_times: [
+        { trip_id: 't-93',  stop_id: 'A', stop_sequence: 0 },
+        { trip_id: 't-145', stop_id: 'A', stop_sequence: 0 },
+        { trip_id: 't-68',  stop_id: 'A', stop_sequence: 0 },
+        { trip_id: 't-15',  stop_id: 'A', stop_sequence: 0 },
+        { trip_id: 't-205', stop_id: 'A', stop_sequence: 0 },
+        { trip_id: 't-1',   stop_id: 'A', stop_sequence: 0 },
+      ],
+      shapes: [],
+      calendar: [],
+    };
+    const { files } = reconcile({ seed: buildFixtureSeedMemory(), tranzy, csv, options: { buildDate: new Date('2026-06-29') } });
+
+    // The seed ships with route M26 (Piata Garii - Selimbar) which
+    // classifies as metroline. So networks.txt also gets a metroline
+    // row from the seed — pin both seed-derived and Tranzy-derived
+    // categories here.
+    expect(files['networks.txt']).toBe(
+      'network_id,network_name\n' +
+      'special,Cursa Speciala\n' +
+      'school,Transport Elevi\n' +
+      'festival,Untold\n' +
+      'night,Noapte\n' +
+      'metroline,Metropolitana\n',
+    );
+
+    // route_networks.txt — one row per categorized route. M76A (route_id 145)
+    // is now BOTH school AND metroline (long_name "TE2 Floresti" matches the
+    // school TE-prefix check we re-added). M26U (route_id 68) still has
+    // 1:many via Untold + M* prefix. Regular urban route 1 excluded;
+    // M26 (seed) included as metroline.
+    const rnLines = files['route_networks.txt'].trim().split('\n');
+    expect(rnLines[0]).toBe('network_id,route_id');
+    expect(rnLines).toContain('school,93');
+    expect(rnLines).toContain('school,145'); // M76A is BOTH school + metroline
+    expect(rnLines).toContain('metroline,145');
+    expect(rnLines).toContain('festival,68');
+    expect(rnLines).toContain('metroline,68'); // M26U also metroline
+    expect(rnLines).toContain('night,15');
+    expect(rnLines).toContain('special,205');
+    expect(rnLines).toContain('metroline,M26');
+    expect(rnLines).not.toContainEqual(expect.stringMatching(/^[^,]*,1$/));
+
+    // routes.txt — route_desc carries the human label(s) comma-separated
+    // for 1:many, route_long_name is in start-end format (or empty for CS).
+    const routesTxt = files['routes.txt'];
+    const r93row = routesTxt.split('\n').find((l) => l.startsWith('93,'));
+    expect(r93row).toMatch(/,Manastur,Transport Elevi,/);
+    const r145row = routesTxt.split('\n').find((l) => l.startsWith('145,'));
+    // M76A: "TE2 Floresti " stripped → "str. Somesului". route_desc is
+    // now "Transport Elevi, Metropolitana" (1:many via TE prefix in
+    // long_name + M* prefix in short_name). CSV writer quotes the field
+    // because it contains a comma.
+    expect(r145row).toMatch(/,str\. Somesului,"Transport Elevi, Metropolitana",/);
+    const r68row = routesTxt.split('\n').find((l) => l.startsWith('68,'));
+    // Trailing "(untold)" stripped from long_name. M26U is also
+    // metroline (M* prefix) → route_desc carries both labels.
+    expect(r68row).toMatch(/,Uzinei Electrice - Floresti \/ Cetate,(?:"Untold, Metropolitana"|Untold, Metropolitana),/);
+    const r15row = routesTxt.split('\n').find((l) => l.startsWith('15,'));
+    expect(r15row).toMatch(/,Str\. Bucium - Str\. Unirii,Noapte,/);
+    const r205row = routesTxt.split('\n').find((l) => l.startsWith('205,'));
+    // CS long_name cleared, route_desc = "Cursa Speciala"
+    expect(r205row).toMatch(/,CS,,Cursa Speciala,/);
+    // Regular urban: empty route_desc. The field after the destination
+    // string is route_desc — index 4 (0=route_id, 1=agency_id,
+    // 2=route_short_name, 3=route_long_name, 4=route_desc).
+    const r1row = routesTxt.split('\n').find((l) => l.startsWith('1,'));
+    expect(r1row.split(',')[4]).toBe('');
+  });
+
+  it('derives route_long_name from stop_times when cleanup leaves it empty', () => {
+    // Synthesize a route whose Tranzy long_name is just an annotation
+    // (no start/end). After cleanup → empty. The orchestrator should
+    // fall back to "<first stop> - <last stop>" from stop_times.
+    const tranzy = {
+      routes: [
+        { route_id: '777', route_short_name: '88X', route_long_name: '(untold)', route_type: 3 },
+      ],
+      stops: [],
+      trips: [
+        { trip_id: 't-777-a', route_id: '777', direction_id: 0, trip_headsign: '' },
+        { trip_id: 't-777-b', route_id: '777', direction_id: 0, trip_headsign: '' },
+      ],
+      stop_times: [
+        // Trip A: short version (3 stops)
+        { trip_id: 't-777-a', stop_id: 'A', stop_sequence: 0 },
+        { trip_id: 't-777-a', stop_id: 'B', stop_sequence: 1 },
+        { trip_id: 't-777-a', stop_id: 'C', stop_sequence: 2 },
+        // Trip B: long version (5 stops) — should win as the canonical variant
+        { trip_id: 't-777-b', stop_id: 'A', stop_sequence: 0 },
+        { trip_id: 't-777-b', stop_id: 'B', stop_sequence: 1 },
+        { trip_id: 't-777-b', stop_id: 'C', stop_sequence: 2 },
+        { trip_id: 't-777-b', stop_id: 'D', stop_sequence: 3 },
+        { trip_id: 't-777-b', stop_id: 'E', stop_sequence: 4 },
+      ],
+      shapes: [],
+      calendar: [],
+    };
+    const { files, warnings } = reconcile({
+      seed: buildFixtureSeedMemory(), tranzy, csv, options: { buildDate: new Date('2026-06-29') },
+    });
+
+    const routesTxt = files['routes.txt'];
+    const r777row = routesTxt.split('\n').find((l) => l.startsWith('777,'));
+    // "(untold)" got stripped to empty → fallback to longest trip's
+    // first/last stops: A=Piata Garii, E=Selimbar
+    expect(r777row).toMatch(/,Piata Garii - Selimbar,/);
+
+    // Build log surfaces the derived count. New format mentions "desc or
+    // stops fallback" so the assertion key changes.
+    const info = warnings.find((w) => w.severity === 'info' && w.message.includes('derived'));
+    expect(info).toBeDefined();
+    expect(info.message).toMatch(/derived 1 long_name\(s\)/);
+
+    // Route 777 still classifies as festival (via "untold" in route_desc
+    // which Tranzy provides on `(untold)`-style annotations? No — route_desc
+    // is empty for this synthetic row, but the cleaned long_name still
+    // doesn't contain "untold" post-strip. The classification uses the
+    // cleaned long_name. So route 777 falls through to regular urban.
+    // The point of this test is the fallback, not the classification.
+  });
 });
 
 function hhmmssToSeconds(hms) {

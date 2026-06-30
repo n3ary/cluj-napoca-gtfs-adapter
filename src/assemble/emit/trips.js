@@ -66,6 +66,7 @@ export function reconcileTripsAndStopTimes(input) {
   // numbers mean the upstream sources use different naming conventions
   // and we should ask the operators to align them.
   let fuzzyMatchCount = 0;
+  let rewrittenLongNames = 0;
   const noPatternStats = {
     bothDirsTranzyMissing: new Set(),   // route: no pattern in Tranzy
     bothDirsSeedMissing: new Set(),     // route: Tranzy has, but seed missing
@@ -210,13 +211,20 @@ export function reconcileTripsAndStopTimes(input) {
         plans.set(dir, { pattern: null, orderedStops: null, csvOriginTrustable: false, headsign: null });
         continue;
       }
-      const expectedOriginName = orderedStops[0]?.name ?? null;
       const csvOriginName = dir === 0 ? inLabel : outLabel;
-      const exact = expectedOriginName && csvOriginName
-        ? expectedOriginName.trim().toLowerCase() === csvOriginName.trim().toLowerCase()
-        : false;
-      const fuzzy = exact ? true : terminalNamesMatch(expectedOriginName, csvOriginName);
-      perDirMatch.push({ dir, exact, fuzzy });
+      // Traverse the FULL pattern (not just position 0) for the match.
+      // Returns { position, exact, fuzzy, stopName } or null when no
+      // stop in the pattern matches the CSV origin label.
+      const sameDirMatch = findLabelInPattern(csvOriginName, orderedStops);
+      const exact = !!sameDirMatch?.exact;
+      const fuzzy = !!sameDirMatch?.fuzzy;
+      perDirMatch.push({
+        dir,
+        exact,
+        fuzzy,
+        position: sameDirMatch?.position ?? null,
+        matchedStop: sameDirMatch?.stopName ?? null,
+      });
       // Track fuzzy matches (not exact) for the build-log summary.
       // Operators want to know how much of the catalog ↔ CSV alignment
       // is being salvaged by fuzzy token matching — high numbers mean
@@ -249,21 +257,18 @@ export function reconcileTripsAndStopTimes(input) {
     /** @type {{swap0Exact: boolean, swap1Exact: boolean, swap0Fuzzy: boolean, swap1Fuzzy: boolean} | null} */
     let swapTest = null;
     if (swapCandidate) {
-      // CSV col 0 ↔ catalog dir 1
-      const swap0Expected = plan1.orderedStops[0]?.name ?? null;
-      const swap0Csv = inLabel;
-      const swap0Exact = swap0Expected && swap0Csv
-        ? swap0Expected.trim().toLowerCase() === swap0Csv.trim().toLowerCase()
-        : false;
-      const swap0Fuzzy = swap0Exact ? true : terminalNamesMatch(swap0Expected, swap0Csv);
-      // CSV col 1 ↔ catalog dir 0
-      const swap1Expected = plan0.orderedStops[0]?.name ?? null;
-      const swap1Csv = outLabel;
-      const swap1Exact = swap1Expected && swap1Csv
-        ? swap1Expected.trim().toLowerCase() === swap1Csv.trim().toLowerCase()
-        : false;
-      const swap1Fuzzy = swap1Exact ? true : terminalNamesMatch(swap1Expected, swap1Csv);
-      swapTest = { swap0Exact, swap1Exact, swap0Fuzzy, swap1Fuzzy };
+      // CSV col 0 ↔ catalog dir 1 — traverse the FULL dir 1 pattern.
+      const swap0Match = findLabelInPattern(inLabel, plan1.orderedStops);
+      // CSV col 1 ↔ catalog dir 0 — traverse the FULL dir 0 pattern.
+      const swap1Match = findLabelInPattern(outLabel, plan0.orderedStops);
+      swapTest = {
+        swap0Exact: !!swap0Match?.exact,
+        swap1Exact: !!swap1Match?.exact,
+        swap0Fuzzy: !!swap0Match?.fuzzy,
+        swap1Fuzzy: !!swap1Match?.fuzzy,
+        swap0Position: swap0Match?.position ?? null,
+        swap1Position: swap1Match?.position ?? null,
+      };
     }
 
     // Bucket the route by how many of its directions lack a pattern,
@@ -440,13 +445,95 @@ export function reconcileTripsAndStopTimes(input) {
       }
       if (!tierMatched) {
         tier = 'no-match';
+        // Categorize the no-match so the build-log reader knows whether
+        // the operator needs to push Tranzy, fix their CSV, or both.
+        // Heuristics (cheap; we're already past the cheap tiers):
+        //   - catalog-out-of-date: at least one CSV label looks like a
+        //     real stop (≥4-char tokens that don't match route_long_name
+        //     as a substring) but doesn't appear in any pattern.
+        //   - csv-placeholder: a CSV label appears as a substring of the
+        //     catalog's route_long_name (likely a generic term the
+        //     operator used as a placeholder) OR has no tokens ≥4 chars.
+        //   - no-match-asymmetric: patterns exist for both dirs but
+        //     their endpoint pairs differ — the catalog itself is the
+        //     broken source here, no CSV label could reconcile it.
+        const realStopTokenLen = (s) => {
+          if (!s) return false;
+          const norm = normalizeStopName(s);
+          const tokens = (norm.match(/[a-z0-9]+/g) ?? []).filter((t) => t.length >= 4);
+          return tokens.length > 0;
+        };
+        // Use the CSV's own route_long_name (not the catalog's) for the
+        // substring check — the CSV is self-consistent if its terminals
+        // appear in its own metadata. The catalog's long_name might be
+        // from Tranzy/Transitous and not match the CSV's view.
+        const csvRouteLongName = headersCsv?.routeLongName ?? '';
+        const csvLongLower = csvRouteLongName.toLowerCase();
+        const inIsPlaceholder = !realStopTokenLen(inLabel)
+          || (csvRouteLongName && inLabel
+              && csvLongLower.includes(inLabel.toLowerCase()));
+        const outIsPlaceholder = !realStopTokenLen(outLabel)
+          || (csvRouteLongName && outLabel
+              && csvLongLower.includes(outLabel.toLowerCase()));
+        const bothPatternsExist = !!(plan0?.pattern && plan1?.pattern);
+        const patternsAsymmetric = bothPatternsExist && (
+          cat0.name !== '(no pattern)'
+          && cat1.name !== '(no pattern)'
+          && cat0.name !== cat1.name  // different first stops
+        );
+
+        let subtype;
+        let actionableHint;
+        if (inIsPlaceholder || outIsPlaceholder) {
+          subtype = 'csv-placeholder';
+          actionableHint = 'one or both CSV origin labels look like a generic term (matches the CSV\'s own route_long_name substring, or has no real stop name). Operator should fix the CSV.';
+        } else if (patternsAsymmetric) {
+          subtype = 'no-match-asymmetric';
+          actionableHint = 'catalog patterns for the two directions have different first stops; the catalog itself is out of sync. Operator should ask Tranzy to realign.';
+        } else {
+          subtype = 'catalog-out-of-date';
+          actionableHint = 'CSV terminals look like real stops but neither catalog pattern contains them. Operator should ask Tranzy to update the stops for this route.';
+        }
+
         summary = warnMsg(
-          `CSV origin labels DO NOT MATCH catalog for route_short_name "${routeShortName}": ` +
+          `CSV origin labels DO NOT MATCH catalog [${subtype}] for route_short_name "${routeShortName}": ` +
           `dir=0 catalog="${cat0.name}" (from ${cat0.source}) vs csv="${inLabel}"; ` +
           `dir=1 catalog="${cat1.name}" (from ${cat1.source}) vs csv="${outLabel}". ` +
-          `Operator may have renamed or removed these terminals; CSV trip times are still used but ` +
-          `no headsign is derived from CSV terminal names.`,
+          `${actionableHint} ` +
+          `CSV trip times are still used but no headsign is derived from CSV terminal names. ` +
+          `See docs/quirks-and-rules.md#origin-label-matching.`,
+          { route: routeShortName, subtype, inIsPlaceholder, outIsPlaceholder, patternsAsymmetric },
         );
+      }
+      // After all tier resolution (exact-both, swap-exact-both,
+      // swap-fuzzy-both, etc.): when the CSV ↔ catalog mapping is clean,
+      // the CSV's in/out labels are a more accurate "Start - End"
+      // descriptor than whatever Tranzy left in route_long_name
+      // (especially when the catalog is stale and just uses a TE code
+      // or an outdated terminal pair). Rewrite the field so
+      // downstream consumers see the operator-published terminals.
+      //
+      // Guarded to clean resolutions only — Group B (no-match with
+      // catalog-out-of-date / csv-placeholder / asymmetric) is left
+      // alone because the CSV terminals there don't correspond to any
+      // trajectory that exists in the catalog.
+      //
+      // Cross-direction cases (swap-*) get an extra guard: only
+      // rewrite when the two catalog patterns SHARE an endpoint stop
+      // (symmetric). When the patterns have 4 distinct terminal names
+      // (route 30 case), the operator's CSV describes a corridor that
+      // the catalog's two patterns don't connect — rewriting would
+      // produce a route_long_name that consumers can't navigate.
+      if (tierMatched && (tier === 'exact-both' || tier === 'swap-exact-both' || tier === 'swap-fuzzy-both')) {
+        const isCrossDir = tier !== 'exact-both';
+        const symmetric = !isCrossDir || patternsShareEndpoint(plan0?.orderedStops, plan1?.orderedStops);
+        if (symmetric) {
+          const rewritten = `${inLabel} - ${outLabel}`;
+          if (routeRow.route_long_name !== rewritten) {
+            routeRow.route_long_name = rewritten;
+            rewrittenLongNames++;
+          }
+        }
       }
       if (summary) localWarnings.push(summary);
     }
@@ -536,6 +623,12 @@ export function reconcileTripsAndStopTimes(input) {
     localWarnings.push(info(
       `origin validation: ${fuzzyMatchCount} (route, dir) pair(s) used fuzzy word-token matching to align catalog ↔ CSV origin labels ` +
       `(not exact match). See docs/quirks-and-rules.md#fuzzy-origin-matching.`,
+    ));
+  }
+  if (rewrittenLongNames > 0) {
+    localWarnings.push(info(
+      `routes: ${rewrittenLongNames} route_long_name(s) rewritten from CSV in/out (catalog was stale — pattern traversal found a clean resolution, ` +
+      `CSV terminals are more accurate). See docs/quirks-and-rules.md#route-long-name-rewrite-from-csv.`,
     ));
   }
   const totalRoutes = noPatternStats.bothDirsBothMissing.size
@@ -651,31 +744,118 @@ function terminalNamesMatch(a, b) {
   if (!a || !b) return true;
   // Word-based token matching. After diacritic + case normalization,
   // we split each name into words (separators: spaces, hyphens, parens,
-  // punctuation). Two stops match if they share at least one
-  // significant word (length >= 4) — this catches the common CTP
-  // cases where the catalog and the CSV use different precision or
-  // qualifiers for the same physical stop:
-  //   - "P-ta Garii" vs "P-ța Gării Nord"  → share "garii"
+  // punctuation). Two stops match if EITHER:
+  //   - they share ≥2 significant words (length >= 4), OR
+  //   - they share a single significant word of length ≥6.
+  //
+  // The stricter "≥2 or one of length ≥6" rule prevents false-positive
+  // matches on common transit prefixes like "Disp." (4 chars,
+  // abbreviation for "Dispecerat" = depot). Without it, "Disp.
+  // Grigorescu" would falsely match "Disp. IRA" because both share
+  // "disp" — but those are different physical depots.
+  //
+  // Working cases that the rule still accepts:
+  //   - "P-ta Garii" vs "P-ța Gării Nord" → share "pta", "garii" (2)
   //   - "M Pensiunea Dalia Gilau Sud" vs "M-Motel Dalia Gilau Nord"
-  //     → share "dalia", "gilau" (the "Sud"/"Nord" qualifiers differ
-  //     but the underlying complex is the same — same transport
-  //     corridor, different endpoints)
+  //     → share "dalia", "gilau" (2)
+  //   - "Str. Unirii" vs "Disp. Unirii" → share "unirii" (6 chars, ≥6)
+  //   - "Baisoara" vs "Băișoara" → share "baisoara" (≥6 after norm)
+  //
   // Single-character tokens ("M" prefix for metropolitan lines) are
   // ignored to avoid false positives.
   const tokenize = (s) => {
     const normalized = s.toString().toLowerCase()
       .replace(/ă/g, 'a').replace(/â/g, 'a').replace(/î/g, 'i')
       .replace(/ș/g, 's').replace(/ț/g, 't');
-    return new Set((normalized.match(/[a-z0-9]+/g) ?? [])
-      .filter((t) => t.length >= 4));
+    return (normalized.match(/[a-z0-9]+/g) ?? [])
+      .filter((t) => t.length >= 4);
   };
   const tokensA = tokenize(a);
   const tokensB = tokenize(b);
-  if (tokensA.size === 0 || tokensB.size === 0) return true;
+  if (tokensA.length === 0 || tokensB.length === 0) return true;
+  let sharedCount = 0;
   for (const t of tokensB) {
-    if (tokensA.has(t)) return true;
+    if (tokensA.includes(t)) {
+      sharedCount++;
+      if (t.length >= 6) return true;
+    }
   }
+  return sharedCount >= 2;
+}
+
+/**
+ * Diacritic + lowercase normalization shared by `findLabelInPattern`
+ * and the placeholder-detection helper below. Single source of truth
+ * for what "matches" means — change one, change both.
+ */
+function normalizeStopName(s) {
+  if (!s) return '';
+  return s.toString().toLowerCase()
+    .replace(/ă/g, 'a').replace(/â/g, 'a').replace(/î/g, 'i')
+    .replace(/ș/g, 's').replace(/ț/g, 't');
+}
+
+/**
+ * Check whether two catalog patterns share an endpoint stop name.
+ * Returns true if dir 0's first OR last stop appears anywhere in
+ * dir 1's pattern, OR vice versa. Used as the symmetry guard before
+ * rewriting route_long_name from CSV in/out on cross-direction
+ * resolutions — if patterns have 4 distinct terminal names (route 30
+ * case), the CSV's corridor doesn't match the catalog's two patterns.
+ *
+ * Diacritic-insensitive so "P-ța Gării Sud" matches "P-ta Garii Sud"
+ * across the two patterns.
+ */
+function patternsShareEndpoint(orderedStops0, orderedStops1) {
+  if (!Array.isArray(orderedStops0) || !Array.isArray(orderedStops1)
+      || orderedStops0.length === 0 || orderedStops1.length === 0) {
+    return false;
+  }
+  const names1 = new Set(
+    orderedStops1.map((s) => s?.name).filter(Boolean).map(normalizeStopName)
+  );
+  const d0First = orderedStops0[0]?.name;
+  const d0Last = orderedStops0[orderedStops0.length - 1]?.name;
+  if (d0First && names1.has(normalizeStopName(d0First))) return true;
+  if (d0Last && names1.has(normalizeStopName(d0Last))) return true;
+  const names0 = new Set(
+    orderedStops0.map((s) => s?.name).filter(Boolean).map(normalizeStopName)
+  );
+  const d1First = orderedStops1[0]?.name;
+  const d1Last = orderedStops1[orderedStops1.length - 1]?.name;
+  if (d1First && names0.has(normalizeStopName(d1First))) return true;
+  if (d1Last && names0.has(normalizeStopName(d1Last))) return true;
   return false;
+}
+
+/**
+ * Find the first stop in `pattern` whose name matches `label` (exact or
+ * fuzzy via `terminalNamesMatch`). Searches every position, not just
+ * position 0 — needed because CTP's CSV sometimes publishes an origin
+ * that's mid-pattern (M24: catalog dir 0 starts at "Taberei" but the
+ * CSV says col 0 origin is "Calea Floresti" at position 1).
+ *
+ * @returns {{position: number, exact: boolean, fuzzy: boolean, stopName: string} | null}
+ */
+function findLabelInPattern(label, pattern) {
+  if (!label || !Array.isArray(pattern) || pattern.length === 0) return null;
+  const normLabel = normalizeStopName(label);
+  // Exact pass first — diacritic-insensitive so "P-ța Gării Sud" matches
+  // "P-ta Garii Sud" (the common CTP transliteration case).
+  for (let i = 0; i < pattern.length; i++) {
+    const stopName = pattern[i]?.name;
+    if (stopName && normalizeStopName(stopName) === normLabel) {
+      return { position: i, exact: true, fuzzy: true, stopName };
+    }
+  }
+  // Fuzzy pass — token overlap (catches "P-ta Garii" vs "P-ța Gării Nord" etc.).
+  for (let i = 0; i < pattern.length; i++) {
+    const stopName = pattern[i]?.name;
+    if (stopName && terminalNamesMatch(label, stopName)) {
+      return { position: i, exact: false, fuzzy: true, stopName };
+    }
+  }
+  return null;
 }
 
 function formatGtfsTime(seconds) {

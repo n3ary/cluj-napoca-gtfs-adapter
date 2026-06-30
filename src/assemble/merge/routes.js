@@ -486,6 +486,14 @@ export function reconcileRoutes({ seed, tranzy, warnings }) {
     row.route_text_color = 'FFFFFF';
   }
 
+  // Note: route category classification + `route_long_name` cleanup
+  // used to live here as Step 4. It moved to `src/assemble/index.js`
+  // so it can run AFTER trip generation — the cleanup pass now uses
+  // `deriveLongNameFromStops()` as a fallback when cleaning leaves
+  // `route_long_name` empty, and that needs `stop_times.txt` data
+  // which Step 4 didn't have access to. See neary#125 / neary#129
+  // for the design discussion.
+
   // Build-log summary. One line per category — the per-row detail is
   // already in routes.txt, so grepping is enough for auditing.
   if (tranzyAdded > 0) {
