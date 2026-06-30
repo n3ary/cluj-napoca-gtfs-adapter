@@ -558,6 +558,116 @@ describe('applyRouteCategory — desc strategy', () => {
     // long_name cleared by CS rule, desc is empty → fallback to stops
     expect(routes[0].route_long_name).toMatch(/^.+ - .+$/);
   });
+
+  it('captures parenthetical content from long_name cleanup into desc for un-categorized routes (88A case)', () => {
+    // The signature example from PR review. Route 88A is un-categorized
+    // (88A starts with 8, not M, so no metroline match). Tranzy's
+    // long_name + desc are identical: "Floresti Cetate - Emerson (traseu M21)".
+    // After cleanup, the parenthetical "traseu M21" is stripped from
+    // long_name (→ "Floresti Cetate - Emerson"). The stripped content
+    // becomes the desc since cleanedDesc happens to match cleanedLong
+    // (no unique info there) AND we want the parenthetical surfaced
+    // as informational annotation.
+    const routes = [
+      {
+        route_id: '88',
+        route_short_name: '88A',
+        route_long_name: 'Floresti Cetate - Emerson (traseu M21)',
+        route_desc: 'Floresti Cetate - Emerson (traseu M21)',
+      },
+    ];
+    const warnings = [];
+    applyRouteCategory({ routes, warnings });
+    // Both fields had the same content, so cleanedDesc == cleanedLong.
+    // The parenthetical content is the only unique info.
+    expect(routes[0].route_long_name).toBe('Floresti Cetate - Emerson');
+    expect(routes[0].route_desc).toBe('Traseu M21');
+  });
+
+  it('combines cleaned desc with stripped parenthetical when both contribute unique info', () => {
+    // Synthesize: cleanedDesc has unique info AND long_name has a
+    // stripped parenthetical. Both should land in desc with a separator.
+    const routes = [
+      {
+        route_id: 'X',
+        route_short_name: 'X1',
+        route_long_name: 'A - B (note 1)',
+        route_desc: 'C - D',
+      },
+    ];
+    const warnings = [];
+    applyRouteCategory({ routes, warnings });
+    expect(routes[0].route_long_name).toBe('A - B');
+    expect(routes[0].route_desc).toBe('C - D | Note 1');
+  });
+
+  it('title-cases parenthetical content (lowercase → first letter caps)', () => {
+    // "(traseu M21)" → "Traseu M21". Uses "(traseu M21)" rather than
+    // "(untold)" because the latter would categorize the route as
+    // festival before cleanup, defeating the test purpose.
+    const routes = [
+      {
+        route_id: 'X',
+        route_short_name: 'X1',
+        route_long_name: 'Endpoint A - Endpoint B (traseu M21)',
+        route_desc: 'Some unique desc',
+      },
+    ];
+    const warnings = [];
+    applyRouteCategory({ routes, warnings });
+    expect(routes[0].route_desc).toBe('Some unique desc | Traseu M21');
+  });
+
+  it('filters out stripped content that matches a category label (defensive)', () => {
+    // The category-filter guard in desc-building is defensive: when a
+    // parenthetical happens to contain text that matches a category
+    // label (case-insensitive) but the route isn't otherwise
+    // categorized, we drop it from desc so we don't accidentally
+    // surface a category signal that classification declined to apply.
+    //
+    // Construction: short_name "X1" doesn't trigger any short_name
+    // regex. long_name uses "(Metropolitana)" — the metroline pattern
+    // is `/^M\d/.test(short_name)`, NOT a substring check on
+    // long_name, so the route reaches the un-categorized branch.
+    // The filter catches "Metropolitana" against the metroline label
+    // "Metropolitana" and drops it.
+    //
+    // (Why not "(Noapte)" or "(Untold)"? The night and festival
+    // patterns do substring-check long_name, so those would
+    // categorize the route before reaching the filter — defeating
+    // the test.)
+    const routes = [
+      {
+        route_id: 'X',
+        route_short_name: 'X1',
+        route_long_name: 'Endpoint A - Endpoint B (Metropolitana)',
+        route_desc: 'Some desc',
+      },
+    ];
+    const warnings = [];
+    applyRouteCategory({ routes, warnings });
+    expect(routes[0].route_long_name).toBe('Endpoint A - Endpoint B');
+    expect(routes[0].route_desc).toBe('Some desc'); // "Metropolitana" filtered out
+  });
+
+  it('dedupes stripped content when both fields capture the same parenthetical', () => {
+    // 88A case again — Tranzy duplicated "(traseu M21)" in both
+    // long_name and desc. The capture should dedupe so the desc
+    // doesn't show "Traseu M21 | Traseu M21".
+    const routes = [
+      {
+        route_id: '88',
+        route_short_name: '88A',
+        route_long_name: 'A - B (traseu M21)',
+        route_desc: 'A - B (traseu M21)',
+      },
+    ];
+    const warnings = [];
+    applyRouteCategory({ routes, warnings });
+    expect(routes[0].route_long_name).toBe('A - B');
+    // Single "Traseu M21", not duplicated.
+    expect(routes[0].route_desc).toBe('Traseu M21');
+  });
 });
 
 describe('getAllCategories — networks emission input', () => {

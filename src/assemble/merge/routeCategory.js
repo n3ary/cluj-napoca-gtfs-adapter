@@ -172,9 +172,10 @@ export function classifyRoute(row) {
  *      "CURSA SPECIALA" is noise that consumers shouldn't have to
  *      special-case.
  *   2. Strip trailing parenthetical annotations: "(untold)", "(traseu
- *      M21)", "(traseu M21) (something else)". These are free-text
- *      notes Tranzy puts in; they belong in `route_desc` (as the
- *      category label, not the annotation) or nowhere.
+ *      M21)", "(traseu M21) (something else)". When `captureStripped`
+ *      is true, the parenthetical CONTENTS are collected (e.g. "untold",
+ *      "traseu M21") so the orchestrator can pipe them into `route_desc`
+ *      as informational annotations on un-categorized routes.
  *   3. Strip "Transport Elevi -" / "Transport Elevi " prefix for school
  *      routes whose Tranzy data describes the service class rather than
  *      the endpoints ("Transport Elevi Manastur" → "Manastur"). For
@@ -185,23 +186,39 @@ export function classifyRoute(row) {
  *      family. MUST run BEFORE the generic TE-prefix strip below.
  *   5. Strip remaining "TE\d+" / "TE-OG" prefix noise.
  *
- * **Returns** the cleaned string. May be empty for CS, annotation-only
- * values ("(untold)"), or empty inputs. Callers handle empty fallbacks.
+ * **Returns**: when `captureStripped` is true, `{ cleaned, stripped }`
+ * where `stripped` is the array of parenthetical contents (each trimmed,
+ * in original order, deduped within a single call). When false, just
+ * the cleaned string (for callers that don't need the captured
+ * content). May be empty for CS, annotation-only values, or empty inputs.
  *
  * @param {{ route_short_name?: string }} row
  * @param {string} value  the field to clean (long_name OR desc text)
- * @returns {string}
+ * @param {boolean} [captureStripped=false]
+ * @returns {string | { cleaned: string, stripped: string[] }}
  */
-function cleanText(row, value) {
+function cleanText(row, value, captureStripped = false) {
   const s = (row?.route_short_name ?? '').toString();
   let t = (value ?? '').toString().trim();
 
-  if (s === 'CS') return '';
+  if (s === 'CS') {
+    return captureStripped ? { cleaned: '', stripped: [] } : '';
+  }
 
-  // Strip one or more trailing parentheticals.
-  //   "Floresti Cetate - Emerson (traseu M21)" → "Floresti Cetate - Emerson"
-  //   "Uzinei Electrice - Floresti / Cetate (untold)" → "Uzinei Electrice - Floresti / Cetate"
-  t = t.replace(/\s*\([^)]*\)\s*$/g, '').trim();
+  /** @type {string[]} */
+  const stripped = [];
+
+  // Strip trailing parentheticals. Greedy on the right edge so that
+  // "Foo (a) (b)" strips both → "Foo" and captures ["a", "b"].
+  if (captureStripped) {
+    t = t.replace(/\s*\(([^)]*)\)\s*$/g, (_match, content) => {
+      const c = content.trim();
+      if (c) stripped.push(c);
+      return '';
+    }).trim();
+  } else {
+    t = t.replace(/\s*\([^)]*\)\s*$/g, '').trim();
+  }
 
   // "Transport Elevi -" / "Transport Elevi " prefix.
   t = t.replace(/^Transport Elevi[- ]+/i, '');
@@ -215,7 +232,21 @@ function cleanText(row, value) {
   //   "TE-OG Sala Sporturilor" → "Sala Sporturilor"
   t = t.replace(/^TE-?[A-Z0-9]+[- ]+/i, '');
 
-  return t.trim();
+  const cleaned = t.trim();
+  if (!captureStripped) return cleaned;
+
+  // Dedup captured parenthetical content within this single call (the
+  // same string appearing in both long_name AND desc is captured
+  // twice; the orchestrator pipes one list per field).
+  const seen = new Set();
+  const dedupedStripped = [];
+  for (const s of stripped) {
+    if (!seen.has(s)) {
+      seen.add(s);
+      dedupedStripped.push(s);
+    }
+  }
+  return { cleaned, stripped: dedupedStripped };
 }
 
 /**
@@ -315,6 +346,22 @@ export function deriveLongNameFromStops({ routeId, allStopTimeRows, tripToRoute,
 }
 
 /**
+ * Title-case a free-text annotation. Used to format parenthetical
+ * content stripped during cleanup — "(untold)" → "Untold",
+ * "(traseu M21)" → "Traseu M21", "(via X)" → "Via X".
+ *
+ * Capitalizes the first letter of each whitespace-separated token;
+ * preserves the rest of the string verbatim (Romanian diacritics,
+ * digits, mixed case stay as-is).
+ *
+ * @param {string} s
+ * @returns {string}
+ */
+function titleCaseAnnotation(s) {
+  return s.split(/\s+/).map((w) => w ? w.charAt(0).toUpperCase() + w.slice(1) : w).join(' ');
+}
+
+/**
  * Apply classification + cleanup + fallback to all route rows in
  * place. Single orchestrator-facing entry point.
  *
@@ -326,11 +373,11 @@ export function deriveLongNameFromStops({ routeId, allStopTimeRows, tripToRoute,
  *      substring). After cleanup strips that prefix, the signal is gone.
  *      So classify first.
  *
- *   2. **Cleanup long_name** via `cleanLongName()` (strips
- *      parentheticals, prefixes, etc.).
+ *   2. **Cleanup long_name** via `cleanText()` with `captureStripped`
+ *      so we can later pipe parenthetical content into `route_desc`.
  *
- *   3. **Cleanup desc** via `cleanDesc()` (same regexes, applied
- *      symmetrically so desc and long_name stay in sync).
+ *   3. **Cleanup desc** via `cleanText()` with `captureStripped`,
+ *      symmetric with long_name.
  *
  *   4. **route_long_name fallback chain**: cleaned long_name → cleaned
  *      desc (when long_name ended up empty after cleanup but desc has
@@ -339,11 +386,11 @@ export function deriveLongNameFromStops({ routeId, allStopTimeRows, tripToRoute,
  *   5. **route_desc strategy**:
  *      - If classified (≥1 category): `route_desc` is the comma-joined
  *        category labels (`"Transport Elevi, Metropolitana"` for 1:many).
- *      - Else if cleaned desc has data: `route_desc` is the cleaned
- *        desc. Preserves Tranzy's descriptive text for un-categorized
- *        routes (e.g. D51's `" P-ta Mihai Viteazu - Gilau"` is no
- *        longer clobbered to empty).
- *      - Else: empty string.
+ *        Parenthetical content that overlaps with a category label is
+ *        intentionally dropped (already represented).
+ *      - Else if cleaned desc has data: `route_desc` is the cleaned desc,
+ *        possibly combined with stripped parenthetical content (title-cased)
+ *        that provides additional info beyond the cleaned desc.
  *
  * **1:many semantics** live in `route_networks.txt` — one row per
  * (network_id, route_id) so consumers see the n:m mapping natively.
@@ -365,7 +412,7 @@ export function deriveLongNameFromStops({ routeId, allStopTimeRows, tripToRoute,
  *   longNameUnresolvedCount: number,
  *   descCleanedCount: number,
  *   descFromCleanedCount: number,
- *   descFromUnchangedCount: number,
+ *   descFromStrippedCount: number,
  * }}
  */
 export function applyRouteCategory({ routes, allStopTimeRows = [], tripToRoute, stopsByStopId, warnings }) {
@@ -376,31 +423,33 @@ export function applyRouteCategory({ routes, allStopTimeRows = [], tripToRoute, 
   let longNameUnresolvedCount = 0;
   let descCleanedCount = 0;
   let descFromCleanedCount = 0;
-  let descFromUnchangedCount = 0;
+  let descFromStrippedCount = 0;
 
   for (const row of routes) {
-    // 1. Classify against the ORIGINAL row (pre-cleanup). See block
-    //    comment for why order matters.
+    // 1. Classify against the ORIGINAL row (pre-cleanup).
     const categories = classifyRoute(row);
     if (categories.length > 0) classifiedCount++;
     if (categories.length > 1) multiNetworkCount++;
 
-    // 2. Cleanup pass on long_name.
+    // 2. Cleanup long_name (capturing stripped parenthetical content).
     const originalLongName = row.route_long_name ?? '';
-    const cleanedLong = cleanLongName(row);
+    const longResult = cleanText(row, row.route_long_name, true);
+    const cleanedLong = longResult.cleaned;
+    const strippedLong = longResult.stripped;
     if (cleanedLong !== originalLongName) longNameCleanedCount++;
 
-    // 3. Cleanup pass on desc (symmetric with long_name). Counts any
-    //    change as a "cleaned desc" for the build-log INFO summary.
+    // 3. Cleanup desc (capturing stripped parenthetical content).
     const originalDesc = row.route_desc ?? '';
-    const cleanedDesc = cleanDesc(row);
+    const descResult = cleanText(row, row.route_desc, true);
+    const cleanedDesc = descResult.cleaned;
+    const strippedDesc = descResult.stripped;
     if (cleanedDesc !== originalDesc) descCleanedCount++;
 
     // 4. route_long_name fallback chain: long_name → cleaned desc → stops.
     let resolvedLong = cleanedLong;
     if (!resolvedLong && cleanedDesc) {
       resolvedLong = cleanedDesc;
-      longNameDerivedCount++; // counter reused: "derived from somewhere other than long_name"
+      longNameDerivedCount++;
     }
     if (!resolvedLong) {
       const derived = deriveLongNameFromStops({
@@ -421,20 +470,83 @@ export function applyRouteCategory({ routes, allStopTimeRows = [], tripToRoute, 
     // 5. route_desc strategy: categorized labels > cleaned desc > ''.
     if (categories.length > 0) {
       row.route_desc = categories.map((c) => c.label).join(', ');
-    } else if (cleanedDesc) {
-      row.route_desc = cleanedDesc;
-      descFromCleanedCount++;
     } else {
-      row.route_desc = '';
-    }
-    if (row.route_desc === cleanedDesc && cleanedDesc === originalDesc) {
-      descFromUnchangedCount++;
+      // Un-categorized. Build desc from three sources, in priority order:
+      //
+      //   a) Stripped parenthetical content (title-cased) — the "exact
+      //      mirror" Marius wants. When the long_name had "(traseu M21)"
+      //      appended and Tranzy duplicated the same content in desc,
+      //      after cleanup both fields have the same "Start - End"
+      //      text. The parenthetical content is the only signal that's
+      //      NOT in long_name, so it goes to desc.
+      //
+      //   b) Cleaned desc — if Tranzy's desc had unique info beyond
+      //      what was in long_name (e.g. D51's "P-ta Mihai Viteazu -
+      //      Gilau"), use it. Combined with stripped content via " | "
+      //      when both contribute unique info.
+      //
+      //   c) Fallback mirror — when neither (a) nor (b) has unique
+      //      info, desc = cleanedDesc (which equals cleanedLongName).
+      //      Mostly cosmetic; preserves the "desc is a mirror of
+      //      long_name" behavior for routes where Tranzy duplicated
+      //      the same string in both fields.
+      //
+      // The "BUT ONLY IF, left over is not something that we used for
+      // categories" guard filters stripped content whose lowercased
+      // form matches a category label. Defensive — for a route that
+      // reached the un-categorized branch, no category pattern matched,
+      // so any overlap is incidental.
+      const usefulStripped = [...strippedLong, ...strippedDesc]
+        .filter((s) => s.length > 0)
+        .filter((s) => !CATEGORIES.some((c) => c.label.toLowerCase() === s.toLowerCase()))
+        .map(titleCaseAnnotation);
+
+      // Dedupe (same parenthetical content may appear in both fields).
+      const seen = new Set();
+      const dedupedStripped = usefulStripped.filter((s) => {
+        if (seen.has(s)) return false;
+        seen.add(s);
+        return true;
+      });
+
+      const descHasUniqueInfo = cleanedDesc && cleanedDesc !== cleanedLong;
+
+      if (descHasUniqueInfo) {
+        // cleaned desc has info not in long_name.
+        if (dedupedStripped.length > 0) {
+          row.route_desc = `${cleanedDesc} | ${dedupedStripped.join(', ')}`;
+          descFromCleanedCount++;
+          descFromStrippedCount++;
+        } else {
+          row.route_desc = cleanedDesc;
+          descFromCleanedCount++;
+        }
+      } else if (dedupedStripped.length > 0) {
+        // cleaned desc is just a mirror of long_name — surface the
+        // parenthetical content as the unique signal.
+        row.route_desc = dedupedStripped.join(', ');
+        descFromStrippedCount++;
+      } else if (cleanedDesc) {
+        // Fallback: cleaned desc mirrors long_name.
+        row.route_desc = cleanedDesc;
+        descFromCleanedCount++;
+      } else {
+        row.route_desc = '';
+      }
     }
   }
 
   // Build-log INFO summary. Per-row detail is in routes.txt + networks.txt;
   // this is the one-liner for the human reading the build log.
-  if (classifiedCount > 0 || longNameCleanedCount > 0 || longNameDerivedCount > 0 || longNameUnresolvedCount > 0 || descCleanedCount > 0 || descFromCleanedCount > 0) {
+  if (
+    classifiedCount > 0 ||
+    longNameCleanedCount > 0 ||
+    longNameDerivedCount > 0 ||
+    longNameUnresolvedCount > 0 ||
+    descCleanedCount > 0 ||
+    descFromCleanedCount > 0 ||
+    descFromStrippedCount > 0
+  ) {
     warnings.push({
       severity: 'info',
       message:
@@ -442,7 +554,7 @@ export function applyRouteCategory({ routes, allStopTimeRows = [], tripToRoute, 
         `cleaned ${longNameCleanedCount} long_name + ${descCleanedCount} desc, ` +
         `derived ${longNameDerivedCount} long_name(s) (desc or stops fallback)` +
         (longNameUnresolvedCount > 0 ? `, ${longNameUnresolvedCount} unresolved` : '') +
-        `, preserved ${descFromCleanedCount} desc(s) on un-categorized routes` +
+        `, preserved ${descFromCleanedCount} cleaned desc + ${descFromStrippedCount} parentheticals on un-categorized routes` +
         ' — see networks.txt + route_networks.txt',
     });
   }
@@ -455,7 +567,7 @@ export function applyRouteCategory({ routes, allStopTimeRows = [], tripToRoute, 
     longNameUnresolvedCount,
     descCleanedCount,
     descFromCleanedCount,
-    descFromUnchangedCount,
+    descFromStrippedCount,
   };
 }
 
