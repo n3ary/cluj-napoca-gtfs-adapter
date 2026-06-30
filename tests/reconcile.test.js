@@ -230,7 +230,7 @@ describe('reconcile', () => {
       'school,Transport Elevi\n' +
       'festival,Untold\n' +
       'night,Noapte\n' +
-      'metroline,Metropolitana\n',
+      'metroline,Metropolitan\n',
     );
 
     // route_networks.txt — one row per categorized route. M76A (route_id 145)
@@ -257,14 +257,14 @@ describe('reconcile', () => {
     expect(r93row).toMatch(/,Manastur,Transport Elevi,/);
     const r145row = routesTxt.split('\n').find((l) => l.startsWith('145,'));
     // M76A: "TE2 Floresti " stripped → "str. Somesului". route_desc is
-    // now "Transport Elevi, Metropolitana" (1:many via TE prefix in
+    // now "Transport Elevi, Metropolitan" (1:many via TE prefix in
     // long_name + M* prefix in short_name). CSV writer quotes the field
     // because it contains a comma.
-    expect(r145row).toMatch(/,str\. Somesului,"Transport Elevi, Metropolitana",/);
+    expect(r145row).toMatch(/,str\. Somesului,"Transport Elevi, Metropolitan",/);
     const r68row = routesTxt.split('\n').find((l) => l.startsWith('68,'));
     // Trailing "(untold)" stripped from long_name. M26U is also
     // metroline (M* prefix) → route_desc carries both labels.
-    expect(r68row).toMatch(/,Uzinei Electrice - Floresti \/ Cetate,(?:"Untold, Metropolitana"|Untold, Metropolitana),/);
+    expect(r68row).toMatch(/,Uzinei Electrice - Floresti \/ Cetate,(?:"Untold, Metropolitan"|Untold, Metropolitan),/);
     const r15row = routesTxt.split('\n').find((l) => l.startsWith('15,'));
     expect(r15row).toMatch(/,Str\. Bucium - Str\. Unirii,Noapte,/);
     const r205row = routesTxt.split('\n').find((l) => l.startsWith('205,'));
