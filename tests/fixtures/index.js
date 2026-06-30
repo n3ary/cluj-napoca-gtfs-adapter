@@ -78,6 +78,16 @@ const TRANZY = {
   ],
   stops: [],
   trips: [
+    // Route 22 needs at least one trip or the phantom-route filter
+    // (src/assemble/index.js) drops it from the published feed — the
+    // fixture ships this minimal trip so the color-preservation test
+    // below can still find route 22 in routes.txt.
+    {
+      trip_id: 'tranzy-22-fwd',
+      route_id: '22',
+      direction_id: 0,
+      trip_headsign: 'Some Express',
+    },
     // M26 direction=1 — only present in Tranzy, missing from seed.
     // Note: real Tranzy uses route_id='92' for M26, but our reconciler
     // matches by route_short_name (see assemble-rules.md § pattern
@@ -93,6 +103,8 @@ const TRANZY = {
     },
   ],
   stop_times: [
+    { trip_id: 'tranzy-22-fwd', stop_id: 'E', stop_sequence: 0 },
+    { trip_id: 'tranzy-22-fwd', stop_id: 'D', stop_sequence: 1 },
     { trip_id: 'tranzy-M26-back', stop_id: 'E', stop_sequence: 0 },
     { trip_id: 'tranzy-M26-back', stop_id: 'D', stop_sequence: 1 },
   ],

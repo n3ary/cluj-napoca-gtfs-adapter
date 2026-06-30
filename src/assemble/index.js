@@ -115,10 +115,43 @@ export function reconcile({ seed, tranzy, csv, options = {} }) {
   // (Was: emitted unconditionally even when empty, leaving a trailing
   // colon in the build log. Now guarded by the length check above.)
 
-  // Trip count per route (for data-quality check).
+  // Trip count per route (for data-quality check + phantom-route filter).
+  // Counts across all three trip sources — CSV-driven, frequency-anchor,
+  // and Tranzy /trips fallback — so phantom detection isn't fooled by
+  // routes that only have Tranzy fallback rows.
   const tripCountByRouteId = new Map();
-  for (const t of tripRows) {
+  for (const t of [...tripRows, ...freqTripRows, ...fallbackTripRows]) {
     tripCountByRouteId.set(t.route_id, (tripCountByRouteId.get(t.route_id) ?? 0) + 1);
+  }
+
+  // Drop phantom routes. These are routes that appear in Tranzy's
+  // /routes catalog but have zero trips across all three sources — i.e.
+  // no CSV timetable, no frequency-anchor CSV, and no Tranzy /trips or
+  // /stop_times entries to back them up. Without trips, the route is
+  // useless to consumers (the Tranzy-fallback comment in
+  // `tranzy-fallback.js` already explains why we emit fallback rows for
+  // routes that DO have Tranzy trip data). Surfacing these as a WARN so
+  // the build log catches new phantom entries from Tranzy catalog drift
+  // instead of silently publishing hollow rows.
+  const phantomRoutes = routes.filter((r) => !tripCountByRouteId.has(r.route_id));
+  if (phantomRoutes.length > 0) {
+    for (const phantom of phantomRoutes) {
+      routesByRouteId.delete(phantom.route_id);
+    }
+    const phantomDetails = phantomRoutes
+      .map((r) => `${r.route_short_name || '(unnamed)'} (route_id=${r.route_id})`)
+      .join(', ');
+    warnings.push(warnMsg(
+      `routes: ${phantomRoutes.length} phantom route(s) dropped ` +
+      `(in Tranzy /routes but no trips anywhere) — ${phantomDetails}`,
+    ));
+  }
+  // Rebuild the in-memory routes array excluding phantoms. Mutating in
+  // place keeps downstream `routesToTxt(routes)` and `stats.routes`
+  // referring to the same list.
+  if (phantomRoutes.length > 0) {
+    routes.length = 0;
+    routes.push(...routesByRouteId.values());
   }
 
   // Data-quality checks.

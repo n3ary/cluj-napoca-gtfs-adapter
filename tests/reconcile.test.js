@@ -129,6 +129,61 @@ describe('reconcile', () => {
     expect(files['calendar.txt']).toMatch(/^S,/m);
     expect(files['calendar.txt']).toMatch(/^D,/m);
   });
+
+  it('drops phantom routes (Tranzy catalog entry but no trips anywhere) with a WARN', () => {
+    // Synthetic Tranzy response that lists route 999 ("Phantom") in /routes
+    // but provides no /trips or /stop_times for it — mirrors the live
+    // behavior observed for route_id=117 (short_name="2") and
+    // route_id=73 (short_name="M35") where Tranzy catalogs the route but
+    // carries no trip data. The phantom-route filter in
+    // `src/assemble/index.js` should drop these with a WARN.
+    const phantomTranzy = {
+      routes: [
+        { route_id: '999', agency_id: 2, route_short_name: 'Phantom', route_long_name: 'Phantom Route', route_type: 3 },
+      ],
+      stops: [],
+      trips: [],
+      stop_times: [],
+      shapes: [],
+      calendar: [],
+    };
+    const { files, warnings } = reconcile({ seed, tranzy: phantomTranzy, csv, options: { buildDate: new Date('2026-06-29') } });
+    const routesLines = files['routes.txt'].split('\n').slice(1).filter(Boolean);
+    expect(routesLines.find((l) => l.startsWith('999,'))).toBeUndefined();
+    const phantomWarn = warnings.find((w) => w.message.includes('phantom route'));
+    expect(phantomWarn).toBeDefined();
+    expect(phantomWarn.severity).toBe('warn');
+    expect(phantomWarn.message).toContain('Phantom');
+    expect(phantomWarn.message).toContain('route_id=999');
+  });
+
+  it('keeps routes that have ONLY Tranzy fallback trips (no CSV)', () => {
+    // Mirror real Tranzy-fallback behavior: a route with no CSV coverage
+    // but with /trips + /stop_times in Tranzy data should still produce
+    // _NTxxx synthetic trip rows and survive the phantom filter.
+    const fallbackTranzy = {
+      routes: [
+        { route_id: '888', agency_id: 2, route_short_name: 'M99', route_long_name: 'M99 Metroline', route_type: 3 },
+      ],
+      stops: [],
+      trips: [
+        { trip_id: 'tranzy-M99-fwd', route_id: '888', direction_id: 0, trip_headsign: 'M99' },
+      ],
+      stop_times: [
+        { trip_id: 'tranzy-M99-fwd', stop_id: 'A', stop_sequence: 0 },
+        { trip_id: 'tranzy-M99-fwd', stop_id: 'B', stop_sequence: 1 },
+      ],
+      shapes: [],
+      calendar: [],
+    };
+    const { files, warnings } = reconcile({ seed, tranzy: fallbackTranzy, csv, options: { buildDate: new Date('2026-06-29') } });
+    const routesLines = files['routes.txt'].split('\n').slice(1).filter(Boolean);
+    expect(routesLines.find((l) => l.startsWith('888,'))).toBeDefined();
+    const phantomWarn = warnings.find((w) => w.message.includes('phantom route'));
+    expect(phantomWarn).toBeUndefined();
+    // And the Tranzy fallback warning should be present.
+    expect(warnings.some((w) => w.message.includes('Tranzy /trips fallback'))).toBe(true);
+  });
 });
 
 function hhmmssToSeconds(hms) {
