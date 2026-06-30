@@ -740,7 +740,7 @@ function hhmmToSeconds(hhmm) {
  * Returns `true` when at least one side is empty (can't validate either
  * way — caller should treat the CSV terminal as "trustable enough").
  */
-function terminalNamesMatch(a, b) {
+export function terminalNamesMatch(a, b) {
   if (!a || !b) return true;
   // Word-based token matching. After diacritic + case normalization,
   // we split each name into words (separators: spaces, hyphens, parens,
