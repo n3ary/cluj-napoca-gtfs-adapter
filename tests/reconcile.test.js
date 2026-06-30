@@ -314,10 +314,11 @@ describe('reconcile', () => {
     // first/last stops: A=Piata Garii, E=Selimbar
     expect(r777row).toMatch(/,Piata Garii - Selimbar,/);
 
-    // Build log surfaces the derived count.
-    const info = warnings.find((w) => w.severity === 'info' && w.message.includes('derived-from-stops'));
+    // Build log surfaces the derived count. New format mentions "desc or
+    // stops fallback" so the assertion key changes.
+    const info = warnings.find((w) => w.severity === 'info' && w.message.includes('derived'));
     expect(info).toBeDefined();
-    expect(info.message).toMatch(/derived-from-stops 1/);
+    expect(info.message).toMatch(/derived 1 long_name\(s\)/);
 
     // Route 777 still classifies as festival (via "untold" in route_desc
     // which Tranzy provides on `(untold)`-style annotations? No — route_desc

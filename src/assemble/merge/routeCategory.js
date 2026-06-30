@@ -161,24 +161,66 @@ export function classifyRoute(row) {
 }
 
 /**
- * Clean `route_long_name` into "Start - End" format via regex passes.
+ * Apply the standard cleanup regex passes to a free-text value (long_name
+ * OR desc). Shared between `cleanLongName` and `cleanDesc` so the two
+ * fields stay in sync — if we strip a parenthetical on one, we strip it
+ * on the other.
  *
  * Operations, in order:
  *
  *   1. CURSA SPECIALA (`CS`) → empty. No fixed endpoints — calling it
- *      "CURSA SPECIALA" in `route_long_name` is noise that consumers
- *      shouldn't have to special-case.
+ *      "CURSA SPECIALA" is noise that consumers shouldn't have to
+ *      special-case.
  *   2. Strip trailing parenthetical annotations: "(untold)", "(traseu
  *      M21)", "(traseu M21) (something else)". These are free-text
  *      notes Tranzy puts in; they belong in `route_desc` (as the
  *      category label, not the annotation) or nowhere.
  *   3. Strip "Transport Elevi -" / "Transport Elevi " prefix for school
- *      routes whose Tranzy `route_long_name` describes the service
- *      class rather than the endpoints ("Transport Elevi Manastur" →
- *      "Manastur"). For richer start-end extraction (e.g. "Primaverii
- *      - Onisifor Ghibu" for TE1) the CTP website source is required —
- *      tracked in neary#129.
- *   4. Strip remaining "TE\d+" / "TE-OG" prefix noise.
+ *      routes whose Tranzy data describes the service class rather than
+ *      the endpoints ("Transport Elevi Manastur" → "Manastur"). For
+ *      richer start-end extraction (e.g. "Primaverii - Onisifor Ghibu"
+ *      for TE1) the CTP website source is required — tracked in
+ *      neary#129.
+ *   4. Strip "TE\d+ Floresti" prefix from Tranzy for the M7x school-bus
+ *      family. MUST run BEFORE the generic TE-prefix strip below.
+ *   5. Strip remaining "TE\d+" / "TE-OG" prefix noise.
+ *
+ * **Returns** the cleaned string. May be empty for CS, annotation-only
+ * values ("(untold)"), or empty inputs. Callers handle empty fallbacks.
+ *
+ * @param {{ route_short_name?: string }} row
+ * @param {string} value  the field to clean (long_name OR desc text)
+ * @returns {string}
+ */
+function cleanText(row, value) {
+  const s = (row?.route_short_name ?? '').toString();
+  let t = (value ?? '').toString().trim();
+
+  if (s === 'CS') return '';
+
+  // Strip one or more trailing parentheticals.
+  //   "Floresti Cetate - Emerson (traseu M21)" → "Floresti Cetate - Emerson"
+  //   "Uzinei Electrice - Floresti / Cetate (untold)" → "Uzinei Electrice - Floresti / Cetate"
+  t = t.replace(/\s*\([^)]*\)\s*$/g, '').trim();
+
+  // "Transport Elevi -" / "Transport Elevi " prefix.
+  t = t.replace(/^Transport Elevi[- ]+/i, '');
+
+  // "TE\d+ Floresti" prefix (M7x school-bus family).
+  //   "TE2 Floresti str. Somesului..." → "str. Somesului..."
+  t = t.replace(/^TE\d+\s+Floresti\s*/i, '');
+
+  // "TE\d+" / "TE-OG" leftover prefix.
+  //   "TE1 Manastur" → "Manastur"
+  //   "TE-OG Sala Sporturilor" → "Sala Sporturilor"
+  t = t.replace(/^TE-?[A-Z0-9]+[- ]+/i, '');
+
+  return t.trim();
+}
+
+/**
+ * Clean `route_long_name` into "Start - End" format via regex passes.
+ * Thin wrapper around `cleanText` that pulls the value off the row.
  *
  * **Note**: this function may return an empty string for routes like CS,
  * routes that were just annotations ("(untold)"), or routes where
@@ -189,35 +231,29 @@ export function classifyRoute(row) {
  * @returns {string} cleaned long_name (may be empty — see note above)
  */
 export function cleanLongName(row) {
-  const s = (row.route_short_name ?? '').toString();
-  let l = (row.route_long_name ?? '').toString().trim();
+  return cleanText(row, row?.route_long_name ?? '');
+}
 
-  if (s === 'CS') return '';
-
-  // Strip one or more trailing parentheticals. Examples:
-  //   "Floresti Cetate - Emerson (traseu M21)" → "Floresti Cetate - Emerson"
-  //   "Uzinei Electrice - Floresti / Cetate (untold)" → "Uzinei Electrice - Floresti / Cetate"
-  // Greedy on the right edge; nested parens aren't expected in CTP data.
-  l = l.replace(/\s*\([^)]*\)\s*$/g, '').trim();
-
-  // "Transport Elevi -" / "Transport Elevi " prefix.
-  //   "Transport Elevi Manastur" → "Manastur"
-  //   "Transport Elevi-Manastur - Kogalniceanu" → "Manastur - Kogalniceanu"
-  l = l.replace(/^Transport Elevi[- ]+/i, '');
-
-  // "TE\d+ Floresti" prefix from Tranzy for the M7x school-bus family.
-  // MUST run BEFORE the generic TE-prefix strip below — otherwise the
-  // generic regex eats "TE2 " and leaves "Floresti ..." behind.
-  //   "TE2 Floresti str. Somesului..." → "str. Somesului..."
-  l = l.replace(/^TE\d+\s+Floresti\s*/i, '');
-
-  // "TE\d+" / "TE-OG" leftover prefix (anything TE* that survived the
-  // Floresti-specific strip above).
-  //   "TE1 Manastur" → "Manastur"
-  //   "TE-OG Sala Sporturilor" → "Sala Sporturilor"
-  l = l.replace(/^TE-?[A-Z0-9]+[- ]+/i, '');
-
-  return l.trim();
+/**
+ * Clean `route_desc` with the same regex passes as `cleanLongName`.
+ *
+ * Tranzy's `route_desc` carries the same kind of free-text noise as
+ * `route_long_name` does — parenthetical annotations, "Transport Elevi"
+ * prefixes, etc. Cleaning it symmetrically means:
+ *
+ *   - For un-categorized routes (no category match), `route_desc` keeps
+ *     the descriptive text Tranzy published (D51's "P-ta Mihai Viteazu -
+ *     Gilau" survives; CS's empty desc stays empty).
+ *   - For categorized routes, `route_desc` is overwritten with the
+ *     comma-separated category labels (the canonical structured
+ *     representation), so the desc-fallback case for un-categorized
+ *     routes doesn't get mixed in.
+ *
+ * @param {{ route_short_name?: string, route_desc?: string }} row
+ * @returns {string} cleaned desc (may be empty)
+ */
+export function cleanDesc(row) {
+  return cleanText(row, row?.route_desc ?? '');
 }
 
 /**
@@ -279,29 +315,40 @@ export function deriveLongNameFromStops({ routeId, allStopTimeRows, tripToRoute,
 }
 
 /**
- * Apply classification + long_name cleanup + stop_times fallback to all
- * route rows in place. Single orchestrator-facing entry point.
+ * Apply classification + cleanup + fallback to all route rows in
+ * place. Single orchestrator-facing entry point.
  *
  * **Order matters** (and is intentional, not arbitrary):
  *
- *   1. Classify against the **original** Tranzy values, BEFORE cleanup.
+ *   1. **Classify** against the ORIGINAL Tranzy values, BEFORE cleanup.
  *      Why: `M76A`'s long_name `"TE2 Floresti str. Somesului - Liceul D.
- *      Tautan"` carries the school-bus signal (`M7x` short_name + the
- *      `^TE\d+\s+Floresti` substring). After cleanup strips that
- *      prefix, the signal is gone — and `M76A` would silently lose its
- *      school classification. So classify first.
+ *      Tautan"` carries the school-bus signal (the `^TE\d+\s+Floresti`
+ *      substring). After cleanup strips that prefix, the signal is gone.
+ *      So classify first.
  *
- *   2. Cleanup pass. Strip parentheticals, prefixes, etc. for the
- *      `route_long_name` the consumer sees.
+ *   2. **Cleanup long_name** via `cleanLongName()` (strips
+ *      parentheticals, prefixes, etc.).
  *
- *   3. Stop_times fallback. If cleanup leaves `route_long_name` empty
- *      (CS, annotation-only rows, Tranzy-missing), derive from
- *      `<first stop> - <last stop>` of the longest trip.
+ *   3. **Cleanup desc** via `cleanDesc()` (same regexes, applied
+ *      symmetrically so desc and long_name stay in sync).
  *
- * **1:many semantics**: `route_desc` carries the comma-separated labels
- * of every matching category (`"Transport Elevi, Metropolitana"` for
- * M76A). `route_networks.txt` gets one row per category so the n:m
- * mapping is preserved in the GTFS-standard file.
+ *   4. **route_long_name fallback chain**: cleaned long_name → cleaned
+ *      desc (when long_name ended up empty after cleanup but desc has
+ *      data) → `<first stop> - <last stop>` from stop_times.
+ *
+ *   5. **route_desc strategy**:
+ *      - If classified (≥1 category): `route_desc` is the comma-joined
+ *        category labels (`"Transport Elevi, Metropolitana"` for 1:many).
+ *      - Else if cleaned desc has data: `route_desc` is the cleaned
+ *        desc. Preserves Tranzy's descriptive text for un-categorized
+ *        routes (e.g. D51's `" P-ta Mihai Viteazu - Gilau"` is no
+ *        longer clobbered to empty).
+ *      - Else: empty string.
+ *
+ * **1:many semantics** live in `route_networks.txt` — one row per
+ * (network_id, route_id) so consumers see the n:m mapping natively.
+ * Comma-separated labels in `route_desc` are the consumer-side
+ * fallback for tools that don't read networks.txt.
  *
  * @param {{
  *   routes: Array<{ route_id: string, route_short_name: string, route_long_name: string, route_desc: string }>,
@@ -316,6 +363,9 @@ export function deriveLongNameFromStops({ routeId, allStopTimeRows, tripToRoute,
  *   longNameCleanedCount: number,
  *   longNameDerivedCount: number,
  *   longNameUnresolvedCount: number,
+ *   descCleanedCount: number,
+ *   descFromCleanedCount: number,
+ *   descFromUnchangedCount: number,
  * }}
  */
 export function applyRouteCategory({ routes, allStopTimeRows = [], tripToRoute, stopsByStopId, warnings }) {
@@ -324,25 +374,35 @@ export function applyRouteCategory({ routes, allStopTimeRows = [], tripToRoute, 
   let longNameCleanedCount = 0;
   let longNameDerivedCount = 0;
   let longNameUnresolvedCount = 0;
+  let descCleanedCount = 0;
+  let descFromCleanedCount = 0;
+  let descFromUnchangedCount = 0;
 
   for (const row of routes) {
-    // 1. Classify against the ORIGINAL row (pre-cleanup). The school
-    //    pattern matches `M7x` in short_name, which survives cleanup —
-    //    but also `^TE\d+\s+Floresti` in long_name, which cleanup
-    //    strips. Order matters here.
+    // 1. Classify against the ORIGINAL row (pre-cleanup). See block
+    //    comment for why order matters.
     const categories = classifyRoute(row);
     if (categories.length > 0) classifiedCount++;
     if (categories.length > 1) multiNetworkCount++;
-    row.route_desc = categories.map((c) => c.label).join(', ');
 
     // 2. Cleanup pass on long_name.
     const originalLongName = row.route_long_name ?? '';
-    const cleaned = cleanLongName(row);
-    if (cleaned !== originalLongName) longNameCleanedCount++;
+    const cleanedLong = cleanLongName(row);
+    if (cleanedLong !== originalLongName) longNameCleanedCount++;
 
-    // 3. Fallback: if cleanup left it empty, derive from stop_times.
-    let resolved = cleaned;
-    if (!resolved) {
+    // 3. Cleanup pass on desc (symmetric with long_name). Counts any
+    //    change as a "cleaned desc" for the build-log INFO summary.
+    const originalDesc = row.route_desc ?? '';
+    const cleanedDesc = cleanDesc(row);
+    if (cleanedDesc !== originalDesc) descCleanedCount++;
+
+    // 4. route_long_name fallback chain: long_name → cleaned desc → stops.
+    let resolvedLong = cleanedLong;
+    if (!resolvedLong && cleanedDesc) {
+      resolvedLong = cleanedDesc;
+      longNameDerivedCount++; // counter reused: "derived from somewhere other than long_name"
+    }
+    if (!resolvedLong) {
       const derived = deriveLongNameFromStops({
         routeId: row.route_id,
         allStopTimeRows,
@@ -350,24 +410,39 @@ export function applyRouteCategory({ routes, allStopTimeRows = [], tripToRoute, 
         stopsByStopId,
       });
       if (derived) {
-        resolved = derived;
+        resolvedLong = derived;
         longNameDerivedCount++;
       } else {
         longNameUnresolvedCount++;
       }
     }
-    row.route_long_name = resolved;
+    row.route_long_name = resolvedLong;
+
+    // 5. route_desc strategy: categorized labels > cleaned desc > ''.
+    if (categories.length > 0) {
+      row.route_desc = categories.map((c) => c.label).join(', ');
+    } else if (cleanedDesc) {
+      row.route_desc = cleanedDesc;
+      descFromCleanedCount++;
+    } else {
+      row.route_desc = '';
+    }
+    if (row.route_desc === cleanedDesc && cleanedDesc === originalDesc) {
+      descFromUnchangedCount++;
+    }
   }
 
   // Build-log INFO summary. Per-row detail is in routes.txt + networks.txt;
   // this is the one-liner for the human reading the build log.
-  if (classifiedCount > 0 || longNameCleanedCount > 0 || longNameDerivedCount > 0 || longNameUnresolvedCount > 0) {
+  if (classifiedCount > 0 || longNameCleanedCount > 0 || longNameDerivedCount > 0 || longNameUnresolvedCount > 0 || descCleanedCount > 0 || descFromCleanedCount > 0) {
     warnings.push({
       severity: 'info',
       message:
         `routes: classified ${classifiedCount} route(s), ${multiNetworkCount} with multiple networks, ` +
-        `cleaned ${longNameCleanedCount}, derived-from-stops ${longNameDerivedCount} long_name(s)` +
-        (longNameUnresolvedCount > 0 ? `, ${longNameUnresolvedCount} unresolved (no stop_times fallback)` : '') +
+        `cleaned ${longNameCleanedCount} long_name + ${descCleanedCount} desc, ` +
+        `derived ${longNameDerivedCount} long_name(s) (desc or stops fallback)` +
+        (longNameUnresolvedCount > 0 ? `, ${longNameUnresolvedCount} unresolved` : '') +
+        `, preserved ${descFromCleanedCount} desc(s) on un-categorized routes` +
         ' — see networks.txt + route_networks.txt',
     });
   }
@@ -378,6 +453,9 @@ export function applyRouteCategory({ routes, allStopTimeRows = [], tripToRoute, 
     longNameCleanedCount,
     longNameDerivedCount,
     longNameUnresolvedCount,
+    descCleanedCount,
+    descFromCleanedCount,
+    descFromUnchangedCount,
   };
 }
 

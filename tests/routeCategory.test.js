@@ -4,6 +4,7 @@ import {
   CATEGORIES,
   classifyRoute,
   cleanLongName,
+  cleanDesc,
   deriveLongNameFromStops,
   applyRouteCategory,
   getAllCategories,
@@ -269,6 +270,38 @@ describe('deriveLongNameFromStops — fallback when cleanup leaves long_name emp
   });
 });
 
+describe('cleanDesc — symmetric cleanup with cleanLongName', () => {
+  it('strips the same parentheticals cleanLongName does', () => {
+    expect(cleanDesc({ route_short_name: '88A', route_desc: 'Floresti Cetate - Emerson (traseu M21)' }))
+      .toBe('Floresti Cetate - Emerson');
+    expect(cleanDesc({ route_short_name: 'M26U', route_desc: 'Uzinei Electrice - Floresti / Cetate (untold)' }))
+      .toBe('Uzinei Electrice - Floresti / Cetate');
+  });
+
+  it('strips "Transport Elevi -" / "Transport Elevi " prefix', () => {
+    expect(cleanDesc({ route_short_name: 'TE1', route_desc: 'Transport Elevi Manastur' }))
+      .toBe('Manastur');
+  });
+
+  it('clears desc for CS (matches cleanLongName behavior)', () => {
+    expect(cleanDesc({ route_short_name: 'CS', route_desc: 'CURSA SPECIALA' })).toBe('');
+  });
+
+  it('handles missing/undefined desc gracefully', () => {
+    expect(cleanDesc({ route_short_name: '1' })).toBe('');
+    expect(cleanDesc({ route_short_name: '1', route_desc: '' })).toBe('');
+  });
+
+  it('preserves clean descs unchanged (D51-style useful endpoint info)', () => {
+    // D51's desc from Tranzy is " P-ta Mihai Viteazu - Gilau" — already
+    // clean (no parentheticals, no Transport Elevi prefix, no TE-? noise).
+    // The cleanup pass leaves it intact so the orchestrator can use it
+    // as route_desc when no category matches.
+    expect(cleanDesc({ route_short_name: 'D51', route_desc: ' P-ta Mihai Viteazu - Gilau' }))
+      .toBe('P-ta Mihai Viteazu - Gilau');
+  });
+});
+
 describe('applyRouteCategory — orchestrator entry point', () => {
   const stopsByStopId = new Map([
     ['A', { stop_name: 'Piata Garii' }],
@@ -427,10 +460,13 @@ describe('applyRouteCategory — orchestrator entry point', () => {
   });
 
   it('does not emit a warning when nothing changes', () => {
+    // After the desc-preservation change, this fixture does fire an
+    // INFO warning ("preserved 1 desc on un-categorized routes"). To get
+    // the no-warning case, all the desc needs to be empty too.
     const allStopTimeRows = [{ trip_id: 't-1', stop_id: 'A', stop_sequence: 0 }];
     const tripToRoute = new Map([['t-1', '1']]);
     const routes = [
-      { route_id: '1', route_short_name: '1', route_long_name: 'A - B', route_desc: 'A - B' },
+      { route_id: '1', route_short_name: '1', route_long_name: 'A - B', route_desc: '' },
     ];
     const warnings = [];
     const result = applyRouteCategory({
@@ -438,7 +474,89 @@ describe('applyRouteCategory — orchestrator entry point', () => {
     });
     expect(result.classifiedCount).toBe(0);
     expect(result.longNameCleanedCount).toBe(0);
+    expect(result.descCleanedCount).toBe(0);
+    expect(result.descFromCleanedCount).toBe(0);
     expect(warnings).toEqual([]);
+  });
+});
+
+describe('applyRouteCategory — desc strategy', () => {
+  // Pin the new behavior: for un-categorized routes, route_desc keeps
+  // the descriptive text from Tranzy (after cleanup). For categorized
+  // routes, route_desc is overwritten with the category labels.
+  // This avoids the previous data loss for D51 / M75A / etc. where
+  // blind overwriting cleared Tranzy's endpoint info.
+
+  const stopsByStopId = new Map([
+    ['A', { stop_name: 'Piata Garii' }],
+    ['B', { stop_name: 'Cart. Zorilor' }],
+  ]);
+
+  it('preserves cleaned desc as route_desc when no category matches (D51 case)', () => {
+    // D51 is un-categorized (employee-only service, no public category
+    // pattern). Its Tranzy desc "P-ta Mihai Viteazu - Gilau" should
+    // survive as the route_desc so consumers see endpoint info instead
+    // of an empty string.
+    const routes = [
+      { route_id: '190', route_short_name: 'D51', route_long_name: 'D51', route_desc: ' P-ta Mihai Viteazu - Gilau' },
+    ];
+    const warnings = [];
+    const result = applyRouteCategory({ routes, warnings });
+    expect(result.classifiedCount).toBe(0);
+    expect(result.descFromCleanedCount).toBe(1);
+    expect(routes[0].route_desc).toBe('P-ta Mihai Viteazu - Gilau');
+  });
+
+  it('uses category labels for categorized routes (desc gets overwritten)', () => {
+    // TE1 is categorized as school. The Tranzy desc "" is empty so
+    // there's nothing to lose — but verify the category label wins
+    // even if desc had data.
+    const routes = [
+      { route_id: '93', route_short_name: 'TE1', route_long_name: 'Transport Elevi Manastur', route_desc: 'Some endpoint desc' },
+    ];
+    const warnings = [];
+    applyRouteCategory({ routes, warnings });
+    expect(routes[0].route_desc).toBe('Transport Elevi');
+  });
+
+  it('uses cleaned desc when long_name is empty but desc has data (M75A case)', () => {
+    // M75A scenario: TE1 Floresti long_name gets stripped to empty,
+    // so long_name falls back to the cleaned desc. Note: the parenthetical
+    // in this desc is mid-string (not trailing), so the cleanup regex
+    // — which only strips TRAILING parentheticals — leaves it intact.
+    // That's the intended behavior — mid-string " (Floresti)" is
+    // meaningful content, not annotation noise.
+    const routes = [
+      {
+        route_id: '144',
+        route_short_name: 'M75A',
+        route_long_name: 'TE1 Floresti',
+        route_desc: 'Avram Iancu (Floresti) - Liceul DumitruTautan',
+      },
+    ];
+    const warnings = [];
+    applyRouteCategory({ routes, warnings });
+    // long_name falls back to cleaned desc (parenthetical preserved)
+    expect(routes[0].route_long_name).toBe('Avram Iancu (Floresti) - Liceul DumitruTautan');
+    // desc is overwritten with category (metropolitana)
+    expect(routes[0].route_desc).toBe('Metropolitana');
+  });
+
+  it('falls through to stop_times when both long_name and desc are empty (CS case)', () => {
+    const allStopTimeRows = [
+      { trip_id: 't-cs', stop_id: 'A', stop_sequence: 0 },
+      { trip_id: 't-cs', stop_id: 'B', stop_sequence: 1 },
+    ];
+    const tripToRoute = new Map([['t-cs', '205']]);
+    const routes = [
+      { route_id: '205', route_short_name: 'CS', route_long_name: 'CURSA SPECIALA', route_desc: '' },
+    ];
+    const warnings = [];
+    applyRouteCategory({ routes, allStopTimeRows, tripToRoute, stopsByStopId, warnings });
+    // CS gets its category as desc
+    expect(routes[0].route_desc).toBe('Cursa Speciala');
+    // long_name cleared by CS rule, desc is empty → fallback to stops
+    expect(routes[0].route_long_name).toMatch(/^.+ - .+$/);
   });
 });
 
