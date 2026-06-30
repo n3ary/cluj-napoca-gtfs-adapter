@@ -20,22 +20,28 @@ describe('classifyRoute — pattern → category', () => {
     expect(classifyRoute({ route_short_name: 'TE-OG' })).toEqual([{ id: 'school', label: 'Transport Elevi' }]);
   });
 
-  it('classifies M7x routes as metroline only (school M7x regex dropped per PR review)', () => {
-    // Per PR review: we dropped the M7x-specific short_name regex from
-    // the school pattern. M7x routes are metroline-shaped (M* prefix)
-    // and they fall through to metroline. Operationally they ARE Floresti
-    // metroline services that also serve school destinations, but the
-    // signal isn't strong enough to badge them as "school" automatically.
-    // If CTP later adds "elevi" to the long_name explicitly, the
-    // /elevi/i substring check picks it up.
+  it('classifies M7x routes as BOTH school + metroline (TE prefix in long_name)', () => {
+    // The M7x school-bus family carries the school designation as
+    // long_name (`TE2 Floresti ...`, `TE1F`) while Tranzy catalogs them
+    // with the M* metroline prefix. Both signals are real — they're
+    // Floresti metroline services that also serve school destinations
+    // (Liceul Dumitru Tautan, Cetatea Fetei, etc.). The TE-prefix
+    // check on long_name catches the school signal that the M* prefix
+    // check alone would miss.
     expect(classifyRoute({
       route_short_name: 'M76A',
       route_long_name: 'TE2 Floresti str. Somesului',
-    })).toEqual([{ id: 'metroline', label: 'Metropolitana' }]);
+    })).toEqual([
+      { id: 'school', label: 'Transport Elevi' },
+      { id: 'metroline', label: 'Metropolitana' },
+    ]);
     expect(classifyRoute({
       route_short_name: 'M75B',
       route_long_name: 'TE1F',
-    })).toEqual([{ id: 'metroline', label: 'Metropolitana' }]);
+    })).toEqual([
+      { id: 'school', label: 'Transport Elevi' },
+      { id: 'metroline', label: 'Metropolitana' },
+    ]);
   });
 
   it('catches "Elevi" substring case-insensitively across all 3 fields', () => {
@@ -538,8 +544,10 @@ describe('applyRouteCategory — desc strategy', () => {
     applyRouteCategory({ routes, warnings });
     // long_name falls back to cleaned desc (parenthetical preserved)
     expect(routes[0].route_long_name).toBe('Avram Iancu (Floresti) - Liceul DumitruTautan');
-    // desc is overwritten with category (metropolitana)
-    expect(routes[0].route_desc).toBe('Metropolitana');
+    // desc is overwritten with BOTH school + metroline (1:many) — the
+    // long_name "TE1 Floresti" matches the school TE-prefix check; the
+    // short_name "M75A" matches the metroline M\d check.
+    expect(routes[0].route_desc).toBe('Transport Elevi, Metropolitana');
   });
 
   it('falls through to stop_times when both long_name and desc are empty (CS case)', () => {

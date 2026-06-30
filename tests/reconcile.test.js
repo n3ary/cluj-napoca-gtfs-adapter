@@ -234,15 +234,14 @@ describe('reconcile', () => {
     );
 
     // route_networks.txt — one row per categorized route. M76A (route_id 145)
-    // is metroline-only since we dropped the M7x short_name regex from
-    // the school pattern — long_name "TE2 Floresti ..." doesn't contain
-    // "elevi", so school no longer matches. M26U (route_id 68) still
-    // has 1:many via Untold + M* prefix. Regular urban route 1 excluded;
+    // is now BOTH school AND metroline (long_name "TE2 Floresti" matches the
+    // school TE-prefix check we re-added). M26U (route_id 68) still has
+    // 1:many via Untold + M* prefix. Regular urban route 1 excluded;
     // M26 (seed) included as metroline.
     const rnLines = files['route_networks.txt'].trim().split('\n');
     expect(rnLines[0]).toBe('network_id,route_id');
     expect(rnLines).toContain('school,93');
-    expect(rnLines).not.toContain('school,145'); // M76A no longer school
+    expect(rnLines).toContain('school,145'); // M76A is BOTH school + metroline
     expect(rnLines).toContain('metroline,145');
     expect(rnLines).toContain('festival,68');
     expect(rnLines).toContain('metroline,68'); // M26U also metroline
@@ -258,8 +257,10 @@ describe('reconcile', () => {
     expect(r93row).toMatch(/,Manastur,Transport Elevi,/);
     const r145row = routesTxt.split('\n').find((l) => l.startsWith('145,'));
     // M76A: "TE2 Floresti " stripped → "str. Somesului". route_desc is
-    // now "Metropolitana" only (no longer 1:many with school).
-    expect(r145row).toMatch(/,str\. Somesului,Metropolitana,/);
+    // now "Transport Elevi, Metropolitana" (1:many via TE prefix in
+    // long_name + M* prefix in short_name). CSV writer quotes the field
+    // because it contains a comma.
+    expect(r145row).toMatch(/,str\. Somesului,"Transport Elevi, Metropolitana",/);
     const r68row = routesTxt.split('\n').find((l) => l.startsWith('68,'));
     // Trailing "(untold)" stripped from long_name. M26U is also
     // metroline (M* prefix) → route_desc carries both labels.

@@ -86,6 +86,10 @@ export const CATEGORIES = [
     // services that happen to also serve school destinations).
     match: (s, l, d) =>
       /^TE/i.test(s) ||
+      /^TE/i.test(l) ||  // M7x school-bus family: long_name="TE1F",
+                         // "TE1 Floresti", "TE2 Floresti" (Tranzy keeps
+                         // the school designation as long_name even
+                         // though short_name has the M* metroline prefix).
       /elevi/i.test(s) ||
       /elevi/i.test(l) ||
       /elevi/i.test(d),
