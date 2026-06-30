@@ -25,6 +25,7 @@ import { runDataQualityChecks } from './check/data-quality.js';
 import { tranzyPatternsByRouteDir, seedPatternsByRouteDir } from './derive/patterns.js';
 import { reconcileTranzyFallback } from './emit/tranzy-fallback.js';
 import { buildNetworks, formatNetworkUsageSummary } from './emit/networks.js';
+import { applyRouteCategory } from './merge/routeCategory.js';
 import { warnMsg, info } from '../lib/log-severity.js';
 
 /**
@@ -155,7 +156,27 @@ export function reconcile({ seed, tranzy, csv, options = {} }) {
     routes.push(...routesByRouteId.values());
   }
 
-  // Data-quality checks.
+  const agencyTxt = ensureAgencyTimezone(seed.agencyTxt, options.timezone ?? 'Europe/Bucharest');
+  const allTripRows = [...tripRows, ...freqTripRows, ...fallbackTripRows];
+  const allStopTimeRows = [...stopTimeRows, ...freqStopTimeRows, ...fallbackStopTimeRows];
+
+  // Route category classification + `route_long_name` cleanup + stop_times
+  // fallback. Runs AFTER phantom filtering (so we don't classify routes
+  // we're about to drop) and AFTER trip generation (so the stop_times
+  // fallback in `routeCategory.js` has the data it needs). See
+  // `src/assemble/merge/routeCategory.js` for the pattern table and
+  // `deriveLongNameFromStops()` for the fallback logic.
+  const tripToRoute = new Map();
+  for (const t of allTripRows) tripToRoute.set(String(t.trip_id), String(t.route_id));
+  applyRouteCategory({
+    routes,
+    allStopTimeRows,
+    tripToRoute,
+    stopsByStopId,
+    warnings,
+  });
+
+  // Data-quality checks (now sees classified routes).
   runDataQualityChecks({
     agencyTxt: seed.agencyTxt,
     routes,
@@ -164,14 +185,10 @@ export function reconcile({ seed, tranzy, csv, options = {} }) {
     warnings,
   });
 
-  const agencyTxt = ensureAgencyTimezone(seed.agencyTxt, options.timezone ?? 'Europe/Bucharest');
-  const allTripRows = [...tripRows, ...freqTripRows, ...fallbackTripRows];
-  const allStopTimeRows = [...stopTimeRows, ...freqStopTimeRows, ...fallbackStopTimeRows];
   // Networks + route_networks — derived from the classified `route_desc`
-  // values. The classification already ran inside `reconcileRoutes()`
-  // (Step 4) before this point, so `routes` here have the final desc
-  // and long_name. See `src/assemble/merge/routeCategory.js` for the
-  // pattern table and `src/assemble/emit/networks.js` for emission.
+  // values that `applyRouteCategory` just populated. Empty for feeds
+  // with no categorized routes (caller drops the file from the zip).
+  // See `src/assemble/emit/networks.js` for emission rules.
   const { networksTxt, routeNetworksTxt, networkUsage } = buildNetworks(routes);
   if (networkUsage.size > 0) {
     warnings.push(info(`networks: ${formatNetworkUsageSummary(networkUsage)}`));

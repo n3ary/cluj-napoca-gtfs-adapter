@@ -26,7 +26,6 @@
 import { parseCsv } from '../../lib/csv.js';
 import { info } from '../../lib/log-severity.js';
 import { canonicalShortName } from '../../sources/ctp-csv/shortname-aliases.js';
-import { applyCategory } from './routeCategory.js';
 
 /**
  * Normalize a color value to the GTFS-spec `Color` type: six-digit hex,
@@ -487,27 +486,13 @@ export function reconcileRoutes({ seed, tranzy, warnings }) {
     row.route_text_color = 'FFFFFF';
   }
 
-  // ── Step 4: Route category classification + `route_long_name` cleanup.
-  // Runs after Steps 1–3 so each row has the final short_name, long_name,
-  // and color before we tag it. See `src/assemble/merge/routeCategory.js`
-  // for the pattern table and the rationale (neary#125). Summary: this
-  // rewrites `route_long_name` into "Start - End" format (stripping
-  // parentheticals + school-route prefixes) and sets `route_desc` to
-  // the human-readable category label so consumers don't have to parse
-  // `route_short_name` prefixes. Networks are emitted downstream by
-  // `src/assemble/emit/networks.js`.
-  let classifiedCount = 0;
-  let longNameCleanedCount = 0;
-  for (const row of routes) {
-    const result = applyCategory(row);
-    if (result.category) classifiedCount++;
-    if (result.longNameChanged) longNameCleanedCount++;
-  }
-  if (classifiedCount > 0 || longNameCleanedCount > 0) {
-    warnings.push(info(
-      `routes: classified ${classifiedCount} into networks, cleaned ${longNameCleanedCount} long_name(s) — see networks.txt`,
-    ));
-  }
+  // Note: route category classification + `route_long_name` cleanup
+  // used to live here as Step 4. It moved to `src/assemble/index.js`
+  // so it can run AFTER trip generation — the cleanup pass now uses
+  // `deriveLongNameFromStops()` as a fallback when cleaning leaves
+  // `route_long_name` empty, and that needs `stop_times.txt` data
+  // which Step 4 didn't have access to. See neary#125 / neary#129
+  // for the design discussion.
 
   // Build-log summary. One line per category — the per-row detail is
   // already in routes.txt, so grepping is enough for auditing.

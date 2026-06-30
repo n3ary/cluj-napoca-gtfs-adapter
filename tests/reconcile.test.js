@@ -229,8 +229,8 @@ describe('reconcile', () => {
       'special,Cursa Speciala\n' +
       'school,Transport Elevi\n' +
       'festival,Untold\n' +
-      'night,Night service\n' +
-      'metroline,Metroline\n',
+      'night,Noapte\n' +
+      'metroline,Metropolitana\n',
     );
 
     // route_networks.txt — one row per categorized route. Regular urban
@@ -257,7 +257,7 @@ describe('reconcile', () => {
     // Trailing "(untold)" stripped from long_name
     expect(r68row).toMatch(/,Uzinei Electrice - Floresti \/ Cetate,Untold,/);
     const r15row = routesTxt.split('\n').find((l) => l.startsWith('15,'));
-    expect(r15row).toMatch(/,Str\. Bucium - Str\. Unirii,Night service,/);
+    expect(r15row).toMatch(/,Str\. Bucium - Str\. Unirii,Noapte,/);
     const r205row = routesTxt.split('\n').find((l) => l.startsWith('205,'));
     // CS long_name cleared, route_desc = "Cursa Speciala"
     expect(r205row).toMatch(/,CS,,Cursa Speciala,/);
@@ -266,6 +266,57 @@ describe('reconcile', () => {
     // 2=route_short_name, 3=route_long_name, 4=route_desc).
     const r1row = routesTxt.split('\n').find((l) => l.startsWith('1,'));
     expect(r1row.split(',')[4]).toBe('');
+  });
+
+  it('derives route_long_name from stop_times when cleanup leaves it empty', () => {
+    // Synthesize a route whose Tranzy long_name is just an annotation
+    // (no start/end). After cleanup → empty. The orchestrator should
+    // fall back to "<first stop> - <last stop>" from stop_times.
+    const tranzy = {
+      routes: [
+        { route_id: '777', route_short_name: '88X', route_long_name: '(untold)', route_type: 3 },
+      ],
+      stops: [],
+      trips: [
+        { trip_id: 't-777-a', route_id: '777', direction_id: 0, trip_headsign: '' },
+        { trip_id: 't-777-b', route_id: '777', direction_id: 0, trip_headsign: '' },
+      ],
+      stop_times: [
+        // Trip A: short version (3 stops)
+        { trip_id: 't-777-a', stop_id: 'A', stop_sequence: 0 },
+        { trip_id: 't-777-a', stop_id: 'B', stop_sequence: 1 },
+        { trip_id: 't-777-a', stop_id: 'C', stop_sequence: 2 },
+        // Trip B: long version (5 stops) — should win as the canonical variant
+        { trip_id: 't-777-b', stop_id: 'A', stop_sequence: 0 },
+        { trip_id: 't-777-b', stop_id: 'B', stop_sequence: 1 },
+        { trip_id: 't-777-b', stop_id: 'C', stop_sequence: 2 },
+        { trip_id: 't-777-b', stop_id: 'D', stop_sequence: 3 },
+        { trip_id: 't-777-b', stop_id: 'E', stop_sequence: 4 },
+      ],
+      shapes: [],
+      calendar: [],
+    };
+    const { files, warnings } = reconcile({
+      seed: buildFixtureSeedMemory(), tranzy, csv, options: { buildDate: new Date('2026-06-29') },
+    });
+
+    const routesTxt = files['routes.txt'];
+    const r777row = routesTxt.split('\n').find((l) => l.startsWith('777,'));
+    // "(untold)" got stripped to empty → fallback to longest trip's
+    // first/last stops: A=Piata Garii, E=Selimbar
+    expect(r777row).toMatch(/,Piata Garii - Selimbar,/);
+
+    // Build log surfaces the derived count.
+    const info = warnings.find((w) => w.severity === 'info' && w.message.includes('derived-from-stops'));
+    expect(info).toBeDefined();
+    expect(info.message).toMatch(/derived-from-stops 1/);
+
+    // Route 777 still classifies as festival (via "untold" in route_desc
+    // which Tranzy provides on `(untold)`-style annotations? No — route_desc
+    // is empty for this synthetic row, but the cleaned long_name still
+    // doesn't contain "untold" post-strip. The classification uses the
+    // cleaned long_name. So route 777 falls through to regular urban.
+    // The point of this test is the fallback, not the classification.
   });
 });
 

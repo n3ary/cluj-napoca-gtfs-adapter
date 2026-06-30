@@ -4,16 +4,16 @@ import { buildNetworks, formatNetworkUsageSummary } from '../src/assemble/emit/n
 
 describe('buildNetworks — networks.txt + route_networks.txt', () => {
   it('emits networks.txt with only the categories actually used', () => {
-    // Only school + night have routes — festival/commuter/etc. should NOT
+    // Only school + night have routes — festival/airport/etc. should NOT
     // appear in networks.txt even though they're in CATEGORIES.
     const routes = [
       { route_id: '93', route_short_name: 'TE1', route_long_name: 'Manastur', route_desc: 'Transport Elevi' },
       { route_id: '94', route_short_name: 'TE2', route_long_name: 'Bucium', route_desc: 'Transport Elevi' },
-      { route_id: '15', route_short_name: '25N', route_long_name: 'Bucium - Unirii', route_desc: 'Night service' },
+      { route_id: '15', route_short_name: '25N', route_long_name: 'Bucium - Unirii', route_desc: 'Noapte' },
     ];
     const { networksTxt, routeNetworksTxt, networkUsage } = buildNetworks(routes);
     expect(networksTxt).toBe(
-      'network_id,network_name\nschool,Transport Elevi\nnight,Night service\n',
+      'network_id,network_name\nschool,Transport Elevi\nnight,Noapte\n',
     );
     expect(routeNetworksTxt).toBe(
       'network_id,route_id\nschool,93\nschool,94\nnight,15\n',
@@ -59,11 +59,11 @@ describe('buildNetworks — networks.txt + route_networks.txt', () => {
     const routes = [
       { route_id: '93', route_short_name: 'TE1', route_long_name: '', route_desc: 'Transport Elevi' },
       { route_id: '68', route_short_name: 'M26U', route_long_name: '', route_desc: 'Untold' },
-      { route_id: '15', route_short_name: '25N', route_long_name: '', route_desc: 'Night service' },
+      { route_id: '15', route_short_name: '25N', route_long_name: '', route_desc: 'Noapte' },
     ];
     const { networksTxt } = buildNetworks(routes);
     expect(networksTxt).toBe(
-      'network_id,network_name\nschool,Transport Elevi\nfestival,Untold\nnight,Night service\n',
+      'network_id,network_name\nschool,Transport Elevi\nfestival,Untold\nnight,Noapte\n',
     );
   });
 

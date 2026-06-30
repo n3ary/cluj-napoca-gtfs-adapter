@@ -16,7 +16,8 @@
  * - The adapter parses those patterns once here, writes the result as
  *   standard GTFS fields (`route_desc` for the human label,
  *   `networks.txt` + `route_networks.txt` for the structured mapping),
- *   and emits cleaned `route_long_name` in start-end format.
+ *   and emits cleaned `route_long_name` in start-end format (with a
+ *   stop_times-based fallback for routes where cleaning leaves it empty).
  * - `route_short_name` keeps Tranzy's value verbatim — the operator's
  *   chosen rider-facing identifier (e.g. `25N`, `TE1`, `M76A`) is the
  *   GTFS-spec way to carry service-class info, and we don't munge it.
@@ -24,7 +25,7 @@
  * **Classification**: 1:1 with priority. Most-specific category wins.
  * `TE1` and `25N` are unambiguous (school / night respectively). Edge
  * cases (e.g. `M76A` whose `long_name` starts with `TE2 Floresti`) are
- * resolved by the school pattern's `long_name` check.
+ * resolved by the school pattern's checks across all three fields.
  *
  * **Calendar windows** (school-year-only, festival-only) are *not*
  * tracked here — they're a property of the schedule view, orthogonal to
@@ -34,62 +35,95 @@
 /**
  * Categories, ordered most-specific first. First match wins.
  *
- * Each entry: `{ id, label, match(s, l) }` where
+ * Each entry: `{ id, label, match(s, l, d) }` where
  *   - `id` is the network_id (machine-readable, kebab-case-ish)
  *   - `label` is the human-readable string that goes into `route_desc`
  *     AND into `networks.txt` `network_name`. Keeping these aligned
  *     means consumers reading `route_desc` directly get the same string
  *     they'd get from joining `route_networks.txt` → `networks.txt`.
- *   - `match` is a predicate over (route_short_name, route_long_name)
+ *     Labels are in Romanian to match the operator's terminology
+ *     ("Noapte", "Metropolitana" — Cluj-CTP's own term for the
+ *     suburban bus network is "Metropolitana" per ctpcj.ro).
+ *   - `match` is a predicate over (route_short_name, route_long_name,
+ *     route_desc). We check all three because Tranzy sometimes carries
+ *     the signal in just one — e.g. "(untold)" annotation lands in
+ *     route_desc for festival routes, "Transport Elevi X" lands in
+ *     long_name for school buses. Case-insensitive substring matching
+ *     on long_name and route_desc so operator-named variants work.
  *
  * Add new categories at the END of this list so existing priorities stay
  * stable. Bumping a category earlier = behavior change for routes that
  * match multiple patterns.
+ *
+ * **`commuter` was removed**: D51 (the only `D*`-prefixed route) is not
+ * a commuter rail service — per ctpcj.ro it's an employee-only /
+ * convention transport route, not a public commuter pattern. If a
+ * future feed has a genuine commuter service, it can be re-added here
+ * with a more specific pattern.
  */
 export const CATEGORIES = [
   {
     id: 'special',
     label: 'Cursa Speciala',
-    match: (s, l) => s === 'CS' || /CURSA SPECIALA/i.test(l),
+    match: (s, l, d) =>
+      s === 'CS' || /CURSA SPECIALA/i.test(l) || /CURSA SPECIALA/i.test(d),
   },
   {
     id: 'school',
     label: 'Transport Elevi',
-    // CTP uses two namings for school buses:
-    //   - "TE1".."TE14" → the urban school bus series
-    //   - "M75A".."M79C" → numbered with the M prefix because they go
-    //     to Floresti, but `route_long_name` starts with "TE1 Floresti"
-    //     .."TE5 Floresti" — school destination.
-    // We check long_name too so M7x school buses are correctly tagged
-    // even when their short_name doesn't carry a TE prefix.
-    match: (s, l) =>
+    // School buses appear under three naming patterns in Tranzy:
+    //   1. `TE*` short_name (urban: TE1..TE14, TE-OG)
+    //   2. `M7[5-9][A-Z]?` short_name (Floresti school: M75A..M79C)
+    //   3. Any route whose long_name or route_desc contains "elevi"
+    //      case-insensitively — defensive against operator-named
+    //      variants CTP may introduce later.
+    match: (s, l, d) =>
       /^TE/i.test(s) ||
       /^M7[5-9][A-Z]?$/.test(s) ||
-      /^TE\d+\s+Floresti/i.test(l),
+      /elevi/i.test(s) ||
+      /elevi/i.test(l) ||
+      /elevi/i.test(d),
   },
   {
     id: 'festival',
     label: 'Untold',
-    match: (s, l) => /U$/.test(s) || /untold/i.test(l),
+    // Festival services (Untold Music Festival in Cluj). The signal is
+    // either:
+    //   - `*U` suffix in short_name (`30U`, `M26U`)
+    //   - "untold" substring in long_name or route_desc (Tranzy's
+    //     parenthetical "(untold)" in long_name OR plain "Untold" in
+    //     desc). Case-insensitive on both.
+    match: (s, l, d) =>
+      /U$/.test(s) ||
+      /untold/i.test(l) ||
+      /untold/i.test(d),
   },
   {
     id: 'night',
-    label: 'Night service',
-    match: (s, l) => /N$/.test(s) || /noapte/i.test(l),
+    label: 'Noapte',
+    // Night services. Signal is `*N` suffix or "noapte" substring
+    // (Romanian for "night"; Tranzy uses "Disp." prefix on headsigns
+    // for depot-relative direction, but the long_name/desc sometimes
+    // has "Noapte" explicitly).
+    match: (s, l, d) =>
+      /N$/.test(s) ||
+      /noapte/i.test(l) ||
+      /noapte/i.test(d),
   },
   {
     id: 'airport',
     label: 'Aeroport Express',
-    match: (s, l) => /^A\d/.test(s) || /aeroport/i.test(l),
-  },
-  {
-    id: 'commuter',
-    label: 'Commuter',
-    match: (s) => /^D\d/.test(s),
+    match: (s, l, d) =>
+      /^A\d/.test(s) ||
+      /aeroport/i.test(l) ||
+      /aeroport/i.test(d),
   },
   {
     id: 'metroline',
-    label: 'Metroline',
+    label: 'Metropolitana',
+    // Cluj-CTP's own term for the suburban/metroline bus network is
+    // "Metropolitana" (per ctpcj.ro). Used in the consumer-facing label
+    // because that's what riders search for on the agency site.
     match: (s) => /^M\d/.test(s),
   },
 ];
@@ -114,7 +148,7 @@ export function classifyRoute(row) {
 }
 
 /**
- * Clean `route_long_name` into "Start - End" format.
+ * Clean `route_long_name` into "Start - End" format via regex passes.
  *
  * Operations, in order:
  *
@@ -133,8 +167,13 @@ export function classifyRoute(row) {
  *      tracked in neary#129.
  *   4. Strip remaining "TE\d+" / "TE-OG" prefix noise.
  *
+ * **Note**: this function may return an empty string for routes like CS,
+ * routes that were just annotations ("(untold)"), or routes where
+ * Tranzy never published a long_name. The orchestrator should fall back
+ * to `deriveLongNameFromStops()` in those cases.
+ *
  * @param {{ route_short_name?: string, route_long_name?: string }} row
- * @returns {string} cleaned long_name (may be empty)
+ * @returns {string} cleaned long_name (may be empty — see note above)
  */
 export function cleanLongName(row) {
   const s = (row.route_short_name ?? '').toString();
@@ -169,25 +208,132 @@ export function cleanLongName(row) {
 }
 
 /**
- * Apply classification + long_name cleanup to a route row in place.
- * Mutates the row and returns a summary of what changed.
+ * Derive a "First stop - Last stop" `route_long_name` from stop_times
+ * data. Used as the fallback when `cleanLongName()` leaves the field
+ * empty (CS special-cases, annotation-only routes, routes Tranzy never
+ * published a long_name for).
  *
- * @param {{ route_short_name?: string, route_long_name?: string, route_desc?: string }} row
- * @returns {{ category: { id: string, label: string } | null, longNameChanged: boolean, originalLongName: string }}
+ * Picks the **longest trip** for the route (most stop_times) so the
+ * fallback reflects the canonical full-haul variant, not a truncated
+ * short-turn service.
+ *
+ * @param {{
+ *   routeId: string,
+ *   allStopTimeRows: Array<{ trip_id: string, stop_id: string, stop_sequence: string|number }>,
+ *   tripToRoute: Map<string, string>,
+ *   stopsByStopId: Map<string, { stop_name?: string }>,
+ * }} input
+ * @returns {string} "<first stop name> - <last stop name>", or '' if no data
  */
-export function applyCategory(row) {
-  const originalLongName = row.route_long_name ?? '';
-  const cleanedLongName = cleanLongName(row);
-  row.route_long_name = cleanedLongName;
-  const longNameChanged = originalLongName !== cleanedLongName;
+export function deriveLongNameFromStops({ routeId, allStopTimeRows, tripToRoute, stopsByStopId }) {
+  if (!allStopTimeRows || !tripToRoute || !stopsByStopId) return '';
 
-  // Recompute category against the *cleaned* long_name so the school
-  // predicate (which checks `^TE\d+\s+Floresti` in long_name) sees the
-  // post-cleanup value. The order matters: clean first, then classify.
-  const category = classifyRoute(row);
-  row.route_desc = category?.label ?? '';
+  // Group stop_times by trip for this route.
+  /** @type {Map<string, Array<{ stop_id: string, stop_sequence: number }>>} */
+  const byTrip = new Map();
+  for (const st of allStopTimeRows) {
+    if (tripToRoute.get(String(st.trip_id)) !== routeId) continue;
+    if (!byTrip.has(String(st.trip_id))) byTrip.set(String(st.trip_id), []);
+    byTrip.get(String(st.trip_id)).push({
+      stop_id: String(st.stop_id),
+      stop_sequence: Number(st.stop_sequence),
+    });
+  }
+  if (byTrip.size === 0) return '';
 
-  return { category, longNameChanged, originalLongName };
+  // Pick the longest trip (most stop_times) — the canonical variant.
+  let bestTrip = null;
+  let bestCount = -1;
+  for (const [tripId, sts] of byTrip) {
+    if (sts.length > bestCount) {
+      bestCount = sts.length;
+      bestTrip = tripId;
+    }
+  }
+  if (!bestTrip) return '';
+  const sts = byTrip.get(bestTrip).sort((a, b) => a.stop_sequence - b.stop_sequence);
+  if (sts.length < 2) return '';
+
+  const first = stopsByStopId.get(String(sts[0].stop_id));
+  const last = stopsByStopId.get(String(sts[sts.length - 1].stop_id));
+  if (!first?.stop_name || !last?.stop_name) return '';
+
+  // Avoid emitting "Same stop - Same stop" for circular / single-stop
+  // services — those cases deserve a manually-curated long_name.
+  if (first.stop_name === last.stop_name) return '';
+
+  return `${first.stop_name} - ${last.stop_name}`;
+}
+
+/**
+ * Apply classification + long_name cleanup + stop_times fallback to all
+ * route rows in place. Single orchestrator-facing entry point.
+ *
+ * @param {{
+ *   routes: Array<{ route_id: string, route_short_name: string, route_long_name: string, route_desc: string }>,
+ *   allStopTimeRows?: Array<{ trip_id: string, stop_id: string, stop_sequence: string|number }>,
+ *   tripToRoute?: Map<string, string>,
+ *   stopsByStopId?: Map<string, { stop_name?: string }>,
+ *   warnings: Array<{ severity: string, message: string }>,
+ * }} input
+ * @returns {{
+ *   classifiedCount: number,
+ *   longNameCleanedCount: number,
+ *   longNameDerivedCount: number,
+ *   longNameUnresolvedCount: number,
+ * }}
+ */
+export function applyRouteCategory({ routes, allStopTimeRows = [], tripToRoute, stopsByStopId, warnings }) {
+  let classifiedCount = 0;
+  let longNameCleanedCount = 0;
+  let longNameDerivedCount = 0;
+  let longNameUnresolvedCount = 0;
+
+  for (const row of routes) {
+    // 1. Text cleanup pass.
+    const originalLongName = row.route_long_name ?? '';
+    const cleaned = cleanLongName(row);
+    if (cleaned !== originalLongName) longNameCleanedCount++;
+
+    // 2. Fallback: if cleanup left it empty, derive from stop_times.
+    let resolved = cleaned;
+    if (!resolved) {
+      const derived = deriveLongNameFromStops({
+        routeId: row.route_id,
+        allStopTimeRows,
+        tripToRoute,
+        stopsByStopId,
+      });
+      if (derived) {
+        resolved = derived;
+        longNameDerivedCount++;
+      } else {
+        longNameUnresolvedCount++;
+      }
+    }
+    row.route_long_name = resolved;
+
+    // 3. Classify against the resolved long_name + the pre-classification
+    //    route_desc (Tranzy's original signal). Mutates route_desc.
+    const category = classifyRoute(row);
+    row.route_desc = category?.label ?? '';
+    if (category) classifiedCount++;
+  }
+
+  // Build-log INFO summary. Per-row detail is in routes.txt; this is
+  // the one-liner for the human reading the build log.
+  if (classifiedCount > 0 || longNameCleanedCount > 0 || longNameDerivedCount > 0 || longNameUnresolvedCount > 0) {
+    warnings.push({
+      severity: 'info',
+      message:
+        `routes: classified ${classifiedCount} into networks, ` +
+        `cleaned ${longNameCleanedCount}, derived-from-stops ${longNameDerivedCount} long_name(s)` +
+        (longNameUnresolvedCount > 0 ? `, ${longNameUnresolvedCount} unresolved (no stop_times fallback)` : '') +
+        ' — see networks.txt',
+    });
+  }
+
+  return { classifiedCount, longNameCleanedCount, longNameDerivedCount, longNameUnresolvedCount };
 }
 
 /**
