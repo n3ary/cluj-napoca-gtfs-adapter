@@ -42,8 +42,8 @@
  *     means consumers reading `route_desc` directly get the same string
  *     they'd get from joining `route_networks.txt` → `networks.txt`.
  *     Labels are in Romanian to match the operator's terminology
- *     ("Noapte", "Metropolitana" — Cluj-CTP's own term for the
- *     suburban bus network is "Metropolitana" per ctpcj.ro).
+ *     ("Noapte", "Metropolitan" — Cluj-CTP's own term for the
+ *     suburban bus network is "Metropolitan" per ctpcj.ro).
  *   - `match` is a predicate over (route_short_name, route_long_name,
  *     route_desc). We check all three because Tranzy sometimes carries
  *     the signal in just one — e.g. "(untold)" annotation lands in
@@ -130,9 +130,9 @@ export const CATEGORIES = [
   },
   {
     id: 'metroline',
-    label: 'Metropolitana',
+    label: 'Metropolitan',
     // Cluj-CTP's own term for the suburban/metroline bus network is
-    // "Metropolitana" (per ctpcj.ro). Used in the consumer-facing label
+    // "Metropolitan" (per ctpcj.ro). Used in the consumer-facing label
     // because that's what riders search for on the agency site.
     match: (s) => /^M\d/.test(s),
   },
@@ -394,7 +394,7 @@ function titleCaseAnnotation(s) {
  *        filtered out (so we don't redundantly surface "Untold" when
  *        the route is already classified as festival).
  *      - If classified (≥1 category): `route_desc` is the comma-joined
- *        category labels (`"Transport Elevi, Metropolitana"` for 1:many).
+ *        category labels (`"Transport Elevi, Metropolitan"` for 1:many).
  *        If the parenthetical pool has non-redundant content, it's
  *        appended via " | " — e.g. TE routes whose desc ends in
  *        "(Floresti)" → `"Transport Elevi | Floresti"`, so riders see

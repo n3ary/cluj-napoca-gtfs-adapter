@@ -33,14 +33,14 @@ describe('classifyRoute — pattern → category', () => {
       route_long_name: 'TE2 Floresti str. Somesului',
     })).toEqual([
       { id: 'school', label: 'Transport Elevi' },
-      { id: 'metroline', label: 'Metropolitana' },
+      { id: 'metroline', label: 'Metropolitan' },
     ]);
     expect(classifyRoute({
       route_short_name: 'M75B',
       route_long_name: 'TE1F',
     })).toEqual([
       { id: 'school', label: 'Transport Elevi' },
-      { id: 'metroline', label: 'Metropolitana' },
+      { id: 'metroline', label: 'Metropolitan' },
     ]);
   });
 
@@ -62,7 +62,7 @@ describe('classifyRoute — pattern → category', () => {
       route_long_name: 'Uzinei Electrice - Floresti / Cetate (untold)',
     })).toEqual([
       { id: 'festival', label: 'Untold' },
-      { id: 'metroline', label: 'Metropolitana' },
+      { id: 'metroline', label: 'Metropolitan' },
     ]);
     expect(classifyRoute({ route_short_name: '30U', route_long_name: 'Grigorescu - IRA Untold' }))
       .toEqual([{ id: 'festival', label: 'Untold' }]);
@@ -93,11 +93,11 @@ describe('classifyRoute — pattern → category', () => {
     expect(classifyRoute({ route_short_name: 'D99', route_long_name: 'Anywhere' })).toEqual([]);
   });
 
-  it('classifies M* (non-school) as "Metropolitana"', () => {
+  it('classifies M* (non-school) as "Metropolitan"', () => {
     expect(classifyRoute({ route_short_name: 'M11', route_long_name: 'P-ta Cipariu - Feleacu' }))
-      .toEqual([{ id: 'metroline', label: 'Metropolitana' }]);
+      .toEqual([{ id: 'metroline', label: 'Metropolitan' }]);
     expect(classifyRoute({ route_short_name: 'M26', route_long_name: 'Floresti - Cluj Napoca' }))
-      .toEqual([{ id: 'metroline', label: 'Metropolitana' }]);
+      .toEqual([{ id: 'metroline', label: 'Metropolitan' }]);
   });
 
   it('classifies CS as "Cursa Speciala"', () => {
@@ -381,7 +381,7 @@ describe('applyRouteCategory — orchestrator entry point', () => {
     expect(result.multiNetworkCount).toBe(1); // with 2 networks
     // route_desc is comma-separated in CATEGORIES order: school first,
     // metroline second.
-    expect(routes[0].route_desc).toBe('Transport Elevi, Metropolitana');
+    expect(routes[0].route_desc).toBe('Transport Elevi, Metropolitan');
   });
 
   it('falls back to stop_times when long_name is empty after cleanup', () => {
@@ -547,7 +547,7 @@ describe('applyRouteCategory — desc strategy', () => {
     // desc is overwritten with BOTH school + metroline (1:many) — the
     // long_name "TE1 Floresti" matches the school TE-prefix check; the
     // short_name "M75A" matches the metroline M\d check.
-    expect(routes[0].route_desc).toBe('Transport Elevi, Metropolitana');
+    expect(routes[0].route_desc).toBe('Transport Elevi, Metropolitan');
   });
 
   it('falls through to stop_times when both long_name and desc are empty (CS case)', () => {
@@ -634,11 +634,11 @@ describe('applyRouteCategory — desc strategy', () => {
     // surface a category signal that classification declined to apply.
     //
     // Construction: short_name "X1" doesn't trigger any short_name
-    // regex. long_name uses "(Metropolitana)" — the metroline pattern
+    // regex. long_name uses "(Metropolitan)" — the metroline pattern
     // is `/^M\d/.test(short_name)`, NOT a substring check on
     // long_name, so the route reaches the un-categorized branch.
-    // The filter catches "Metropolitana" against the metroline label
-    // "Metropolitana" and drops it.
+    // The filter catches "Metropolitan" against the metroline label
+    // "Metropolitan" and drops it.
     //
     // (Why not "(Noapte)" or "(Untold)"? The night and festival
     // patterns do substring-check long_name, so those would
@@ -648,14 +648,14 @@ describe('applyRouteCategory — desc strategy', () => {
       {
         route_id: 'X',
         route_short_name: 'X1',
-        route_long_name: 'Endpoint A - Endpoint B (Metropolitana)',
+        route_long_name: 'Endpoint A - Endpoint B (Metropolitan)',
         route_desc: 'Some desc',
       },
     ];
     const warnings = [];
     applyRouteCategory({ routes, warnings });
     expect(routes[0].route_long_name).toBe('Endpoint A - Endpoint B');
-    expect(routes[0].route_desc).toBe('Some desc'); // "Metropolitana" filtered out
+    expect(routes[0].route_desc).toBe('Some desc'); // "Metropolitan" filtered out
   });
 
   it('dedupes stripped content when both fields capture the same parenthetical', () => {
@@ -731,7 +731,7 @@ describe('getAllCategories — networks emission input', () => {
   it('uses Romanian labels (matches ctpcj.ro terminology)', () => {
     const labels = Object.fromEntries(getAllCategories().map((c) => [c.id, c.label]));
     expect(labels.night).toBe('Noapte');
-    expect(labels.metroline).toBe('Metropolitana');
+    expect(labels.metroline).toBe('Metropolitan');
     expect(labels.school).toBe('Transport Elevi');
     expect(labels.festival).toBe('Untold');
     expect(labels.airport).toBe('Aeroport Express');

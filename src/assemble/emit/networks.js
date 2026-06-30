@@ -49,8 +49,8 @@ export function buildNetworks(routes) {
 
   // Build a lookup from label (which is what route_desc holds) to category.
   // Doing it via label keeps `route_desc == network_name` the contract.
-  // route_desc can be a single label ("Metropolitana") or comma-separated
-  // ("Transport Elevi, Metropolitana") for routes that match multiple
+  // route_desc can be a single label ("Metropolitan") or comma-separated
+  // ("Transport Elevi, Metropolitan") for routes that match multiple
   // categories — see applyRouteCategory in routeCategory.js. We split on
   // comma and emit one route_networks.txt row per label so the n:m mapping
   // survives intact.
