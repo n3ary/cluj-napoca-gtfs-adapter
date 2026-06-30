@@ -16,6 +16,7 @@ For the data-quality data-loss categories see
 - [404s: expected weekend gap vs whole-line gap](#404s-expected-weekend-gap-vs-whole-line-gap)
 - [`*`/`**` CSV annotations](#csv-annotations-and-suspension-markers)
 - [Origin label matching: exact / fuzzy / no-match](#origin-label-matching-exact--fuzzy--no-match)
+- [Stale `route_desc` vs `route_long_name`](#stale-route_desc-vs-route_long_name-tranzy-publishes-contradictory-terminals)
 - [Frequency annotations and anchor trips](#frequency-annotations-and-anchor-trips)
 - [Tranzy /trips fallback for routes without CSV](#tranzy-trips-fallback-for-routes-without-csv)
 - [Suspension markers (`Nu circula` etc.)](#suspension-markers-nu-circula-etc)
@@ -218,6 +219,88 @@ origin validation: 47 (route, dir) pair(s) used fuzzy word-token matching to ali
 A high count means the upstream sources use different naming
 conventions for the same stops — operators should consider asking
 CTP / Transitous / Tranzy to align.
+
+---
+
+## Stale `route_desc` vs `route_long_name` (Tranzy publishes contradictory terminals)
+
+Live Tranzy data has ~50 routes where `route_desc` carries a
+**different terminal pair** than `route_long_name` — typically because
+the line was restructured and only one of the two fields got updated.
+Concrete example (route 23 in the published feed):
+
+```
+route_long_name: "P-ta M. Viteazul - C.U.G"
+route_desc:      "P-ta M. Viteazul - EMERSON"
+```
+
+`EMERSON` is a real stop in Cluj's network (route 52L, 36L, etc.
+visit it), but **route 23 does not**. Tranzy's catalog and CTP's CSV
+both agree the line goes to `C.U.G` — only the desc is stale.
+
+The earlier `descHasUniqueInfo` heuristic in `applyRouteCategory`
+saw `cleanedDesc != cleanedLong` and preserved the desc as "unique
+info" — surfacing contradictory terminals to consumers.
+
+### Fix: structural validation against the route's actual pattern
+
+The strongest possible check is structural: does the desc's terminal
+actually appear on this route's pattern? If it does, the operator
+intentionally references that stop (maybe as a service variant /
+historical headsign) — keep the desc. If it doesn't, the desc is
+stale — drop it.
+
+```js
+// src/assemble/merge/routeCategory.js
+function isStaleLongNameVariant(cleanedDesc, cleanedLong, routeStopNames) {
+  if (!cleanedDesc || !cleanedLong) return false;
+  if (!cleanedDesc.includes(' - ') || !cleanedLong.includes(' - ')) return false;
+  if (/[()]/.test(cleanedDesc)) return false;
+  // First terminal must fuzzy-match (handles "P-ta M. Viteazul" vs
+  // "P-ta M. Viteazul Vest") — otherwise the desc is a different
+  // route entirely, not a stale variant.
+  const [descFirst, descSecond] = cleanedDesc.split(' - ');
+  const longFirst = cleanedLong.split(' - ')[0];
+  if (!tokenOverlap(descFirst, longFirst)) return false;
+  // Structural: does the desc's destination appear on this route?
+  if (!routeStopNames) return true; // no data → fall back to stale (safer default)
+  for (const stopName of routeStopNames) {
+    if (tokenOverlap(descSecond, stopName)) return false;
+  }
+  return true;
+}
+```
+
+`routeStopNames` is computed by `getRouteStopNames()` which picks the
+route's longest trip and returns its `stop_name` set. Same heuristic
+as `deriveLongNameFromStops()`.
+
+### Live trace impact
+
+48 routes in the real Tranzy feed (2026-06-30) have stale descs:
+
+| Route | `route_long_name` | `route_desc` (stale) |
+|---|---|---|
+| 23 | `P-ta M. Viteazul - C.U.G` | `P-ta M. Viteazul - EMERSON` |
+| 21 | `P-ta M. Viteazul Vest - Dacia Service` | `P-ta M. Viteazul - Cart. Buna Ziua` |
+| 101 | `Disp. Bucium - P-ta Garii Noi` | `Str. Bucium - P-ta Garii` |
+| 22 | `P-ta Garii Sud - Sp. de Boli Infectioase` | `P-ta Garii - Str. I. Moldovan` |
+| ... | (45 more, all "X - Y" descs where Y isn't on the route) | |
+
+After this fix, these descs become empty. The structural check
+correctly preserves descs whose terminal DOES appear on the route
+(e.g. route 88A's parenthetical annotation, route D51's
+just-a-code long_name).
+
+### Why a structural check rather than format-only matching
+
+Earlier heuristics (format-only, fuzzy first-terminal match) would
+drop **legitimate** descs whose terminal is on the route but
+spelled differently — e.g. a route with long_name `"P-ta M. Viteazul
+Vest - Dacia Service"` and a desc `"P-ta M. Viteazul Vest - Dacia"`
+(no "Service" suffix) — the structural check sees "Dacia" on the
+route pattern → keeps the desc. The format-only check would have
+flagged the destination-mismatch and dropped it.
 
 ---
 

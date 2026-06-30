@@ -79,13 +79,13 @@ describe('classifyRoute — pattern → category', () => {
       .toEqual([{ id: 'night', label: 'Noapte' }]);
   });
 
-  it('classifies A1 / Aeroport long_name as "Aeroport Express"', () => {
+  it('classifies A1 / Aeroport long_name as "Aeroport Expres"', () => {
     expect(classifyRoute({ route_short_name: 'A1', route_long_name: 'Piata Mihai Viteazu - Aeroport' }))
-      .toEqual([{ id: 'airport', label: 'Aeroport Express' }]);
-    expect(classifyRoute({ route_short_name: '99', route_long_name: 'Some Route Aeroport Express' }))
-      .toEqual([{ id: 'airport', label: 'Aeroport Express' }]);
+      .toEqual([{ id: 'airport', label: 'Aeroport Expres' }]);
+    expect(classifyRoute({ route_short_name: '99', route_long_name: 'Some Route Aeroport Expres' }))
+      .toEqual([{ id: 'airport', label: 'Aeroport Expres' }]);
     expect(classifyRoute({ route_short_name: '99', route_long_name: '', route_desc: 'aeroport shuttle' }))
-      .toEqual([{ id: 'airport', label: 'Aeroport Express' }]);
+      .toEqual([{ id: 'airport', label: 'Aeroport Expres' }]);
   });
 
   it('does NOT classify D51 as commuter (D51 is employee-only / convention, not public commuter)', () => {
@@ -725,6 +725,72 @@ describe('applyRouteCategory — desc strategy', () => {
     expect(routes[3].route_desc).toBe('P-ta Mihai Viteazu - Gilau');
   });
 
+  it('keeps desc when its terminal IS on the route pattern (structural validation)', () => {
+    // Stronger fix than the format-only check: when the desc's second
+    // terminal DOES appear on the route's actual stop pattern, the
+    // operator intentionally references that stop — keep the desc.
+    //
+    // Synthesized: route "X" with stop_names {P-ta Floresti, Pod Someșeni,
+    // EMERSON}. The desc's second terminal is "EMERSON" — appears on
+    // the pattern → keep.
+    const routes = [
+      {
+        route_id: 'X',
+        route_short_name: 'X1',
+        route_long_name: 'P-ta Floresti - Pod Someșeni',
+        route_desc: 'P-ta Floresti - EMERSON', // EMERSON is a real stop on this route
+      },
+    ];
+    const allStopTimeRows = [
+      { trip_id: 't-X-a', stop_id: 'X1', stop_sequence: 0 },
+      { trip_id: 't-X-a', stop_id: 'X2', stop_sequence: 1 },
+      { trip_id: 't-X-a', stop_id: 'X3', stop_sequence: 2 },
+    ];
+    const tripToRoute = new Map([['t-X-a', 'X']]);
+    const stopsByStopId = new Map([
+      ['X1', { stop_name: 'P-ta Floresti' }],
+      ['X2', { stop_name: 'Pod Someșeni' }],
+      ['X3', { stop_name: 'EMERSON' }],
+    ]);
+    const warnings = [];
+    applyRouteCategory({ routes, allStopTimeRows, tripToRoute, stopsByStopId, warnings });
+    // EMERSON is on the route → desc is valid → preserved.
+    expect(routes[0].route_desc).toBe('P-ta Floresti - EMERSON');
+  });
+
+  it('drops desc when its terminal is NOT on the route pattern (structural validation)', () => {
+    // Stronger fix: when the desc's second terminal does NOT appear on
+    // the route's pattern at all, it's stale — the operator's desc
+    // references a stop this line doesn't serve.
+    //
+    // Synthesized: route "23" with stop_names {P-ta M. Viteazul, C.U.G}.
+    // The desc says "P-ta M. Viteazul - EMERSON" but EMERSON isn't on
+    // route 23's pattern (it IS on route 52L's pattern, but that
+    // doesn't count) → desc is stale.
+    const routes = [
+      {
+        route_id: '23',
+        route_short_name: '23',
+        route_long_name: 'P-ta M. Viteazul - C.U.G',
+        route_desc: 'P-ta M. Viteazul - EMERSON', // EMERSON not on route 23
+      },
+    ];
+    const allStopTimeRows = [
+      { trip_id: 't-23-a', stop_id: 'S1', stop_sequence: 0 },
+      { trip_id: 't-23-a', stop_id: 'S2', stop_sequence: 1 },
+    ];
+    const tripToRoute = new Map([['t-23-a', '23']]);
+    const stopsByStopId = new Map([
+      ['S1', { stop_name: 'P-ta M. Viteazul' }],
+      ['S2', { stop_name: 'C.U.G' }],
+      // EMERSON exists in the network (e.g. route 52L), but NOT here.
+    ]);
+    const warnings = [];
+    applyRouteCategory({ routes, allStopTimeRows, tripToRoute, stopsByStopId, warnings });
+    // EMERSON is not on this route → desc is stale → dropped.
+    expect(routes[0].route_desc).toBe('');
+  });
+
   it('appends non-category parenthetical to categorized routes (TE + Floresti)', () => {
     // Marius's PR feedback: "route_desc default = category labels +
     // captured parenthetical content (human-readable title case), only
@@ -782,7 +848,7 @@ describe('getAllCategories — networks emission input', () => {
     expect(labels.metroline).toBe('Metropolitan');
     expect(labels.school).toBe('Transport Elevi');
     expect(labels.festival).toBe('Untold');
-    expect(labels.airport).toBe('Aeroport Express');
+    expect(labels.airport).toBe('Aeroport Expres');
     expect(labels.special).toBe('Cursa Speciala');
   });
 });

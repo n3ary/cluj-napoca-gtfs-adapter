@@ -125,7 +125,7 @@ export const CATEGORIES = [
   },
   {
     id: 'airport',
-    label: 'Aeroport Express',
+    label: 'Aeroport Expres',
     match: (s, l, d) =>
       /^A\d/.test(s) ||
       /aeroport/i.test(l) ||
@@ -369,13 +369,14 @@ function titleCaseAnnotation(s) {
 }
 
 /**
- * Stricter variant of `terminalNamesMatch` for the stale-desc heuristic.
- * Requires both strings to have at least one substantial token (length
- * ≥4 chars) AND any token overlap. The "empty tokens → true" fallback
- * in terminalNamesMatch is wrong for stale-detection because a single
- * short letter like "C" or "A" would otherwise be treated as matching.
+ * Token-overlap check with strict empty-tokens handling. Unlike
+ * terminalNamesMatch, returns false (no match) when either side has
+ * no substantial tokens (length ≥4 chars). The empty-tokens → true
+ * fallback in terminalNamesMatch is wrong for structural validation —
+ * "EMERSON" would falsely "match" "C.U.G" because the latter has no
+ * tokens ≥4 (just "cug" which is 3 chars after tokenize).
  */
-function firstTerminalsMatch(a, b) {
+function tokenOverlap(a, b) {
   const tokenize = (s) => {
     const norm = (s || '').toString().toLowerCase()
       .replace(/ă/g, 'a').replace(/â/g, 'a').replace(/î/g, 'i')
@@ -392,36 +393,106 @@ function firstTerminalsMatch(a, b) {
 }
 
 /**
+ * Get the set of stop names that appear on a route's canonical pattern
+ * (longest trip). Used to validate whether a desc-terminal actually
+ * belongs to the route — if not, the desc's terminal is stale.
+ *
+ * @returns {Set<string> | null} Set of stop names, or null if no data
+ *   available (route has no trips in stop_times).
+ */
+function getRouteStopNames({ routeId, allStopTimeRows, tripToRoute, stopsByStopId }) {
+  if (!allStopTimeRows || !tripToRoute || !stopsByStopId) return null;
+
+  /** @type {Map<string, Array<{ stop_id: string, stop_sequence: number }>>} */
+  const byTrip = new Map();
+  for (const st of allStopTimeRows) {
+    if (tripToRoute.get(String(st.trip_id)) !== routeId) continue;
+    if (!byTrip.has(String(st.trip_id))) byTrip.set(String(st.trip_id), []);
+    byTrip.get(String(st.trip_id)).push({
+      stop_id: String(st.stop_id),
+      stop_sequence: Number(st.stop_sequence),
+    });
+  }
+  if (byTrip.size === 0) return null;
+
+  // Pick the longest trip (canonical variant) — same heuristic as
+  // deriveLongNameFromStops.
+  let bestTrip = null;
+  let bestCount = -1;
+  for (const [tripId, sts] of byTrip) {
+    if (sts.length > bestCount) {
+      bestCount = sts.length;
+      bestTrip = tripId;
+    }
+  }
+  if (!bestTrip) return null;
+  const sts = byTrip.get(bestTrip).sort((a, b) => a.stop_sequence - b.stop_sequence);
+
+  const names = new Set();
+  for (const st of sts) {
+    const stop = stopsByStopId.get(String(st.stop_id));
+    if (stop?.stop_name) names.add(stop.stop_name);
+  }
+  return names.size > 0 ? names : null;
+}
+
+/**
  * Detect when Tranzy's `route_desc` is just a stale long_name variant —
  * a string in "X - Y" format where X matches `route_long_name`'s
- * first terminal and the only "unique info" is a different (stale)
- * destination. Treats the desc as not worth surfacing.
+ * first terminal and Y does NOT appear in the route's actual stop
+ * pattern. Treats the desc as not worth surfacing.
  *
  * Why: live Tranzy data shows ~50 routes where Tranzy publishes a
  * `route_desc` whose terminal pair differs from `route_long_name`
- * (the line was restructured and only one of the two was updated).
+ * (the line was restructured and only one of the two got updated).
  * Without this check, applyRouteCategory's `descHasUniqueInfo`
  * branch preserves the stale desc as "unique info" — surfacing
  * contradictory terminals to consumers (e.g. route 23 shows
  * `route_long_name="P-ta M. Viteazul - C.U.G"` AND
  * `route_desc="P-ta M. Viteazul - EMERSON"`, confusing riders).
  *
- * Returns true when the desc looks like a stale long_name variant
- * (long_name format with matching first terminal, no parenthetical
- * extras). Returns false when the desc either:
- *   - has no " - " separator (it's not a long_name-format string —
- *     e.g. parenthetical content like "Traseu M21"),
- *   - contains parens (it has additional annotation info),
- *   - has a different first terminal than cleanedLong.
+ * The strongest possible check is structural: does the desc's
+ * second terminal appear as a stop on this route? If it does, the
+ * operator intentionally references that stop (maybe as a different
+ * service variant / historical headsign) and we should keep the desc.
+ * If it doesn't, the desc's destination is stale and we drop it.
+ *
+ * Returns true (stale) when:
+ *   - both cleanedDesc and cleanedLong have the " - " separator,
+ *   - cleanedDesc has no mid-string parens (parens carry annotation info),
+ *   - the first terminals match (desc's terminal is on this route),
+ *   - the second terminal does NOT appear anywhere on this route.
+ *
+ * Returns false (keep) when:
+ *   - format / parens / first-terminal checks fail (different signal),
+ *   - the second terminal DOES appear on the route's pattern (operator
+ *     intentionally references it).
  */
-function isStaleLongNameVariant(cleanedDesc, cleanedLong) {
+function isStaleLongNameVariant(cleanedDesc, cleanedLong, routeStopNames) {
   if (!cleanedDesc || !cleanedLong) return false;
   if (!cleanedDesc.includes(' - ') || !cleanedLong.includes(' - ')) return false;
-  // Mid-string parens carry annotation info — keep them.
   if (/[()]/.test(cleanedDesc)) return false;
-  const descFirst = cleanedDesc.split(' - ', 1)[0];
-  const longFirst = cleanedLong.split(' - ', 1)[0];
-  return firstTerminalsMatch(descFirst, longFirst);
+
+  const descParts = cleanedDesc.split(' - ');
+  if (descParts.length < 2) return false;
+  const [descFirst, descSecond] = descParts;
+
+  const longFirst = cleanedLong.split(' - ')[0];
+
+  // Both terminals of desc must be on the same route as the long_name's
+  // terminals. First terminal fuzzy-match is the "is this the same
+  // line?" check (handles "P-ta M. Viteazul" vs "P-ta M. Viteazul Vest").
+  if (!tokenOverlap(descFirst, longFirst)) return false;
+
+  // Second terminal is the structural check: does it appear on the route?
+  // If we have no pattern data (routeStopNames is null/undefined), fall
+  // back to the format-only check (treating as stale — the previous
+  // behavior, safer default).
+  if (!routeStopNames) return true;
+  for (const stopName of routeStopNames) {
+    if (tokenOverlap(descSecond, stopName)) return false;
+  }
+  return true;
 }
 
 /**
@@ -596,8 +667,19 @@ export function applyRouteCategory({ routes, allStopTimeRows = [], tripToRoute, 
       //      Mostly cosmetic; preserves the "desc is a mirror of
       //      long_name" behavior for routes where Tranzy duplicated
       //      the same string in both fields.
+      // Structural check: get the route's actual stop names so the stale
+      // variant detector can verify the desc's terminal actually
+      // appears on this route's pattern (not just "trustable enough"
+      // via format matching). Cheaper than it looks — getRouteStopNames
+      // picks the longest trip and returns its stop_name set.
+      const routeStopNames = getRouteStopNames({
+        routeId: row.route_id,
+        allStopTimeRows,
+        tripToRoute,
+        stopsByStopId,
+      });
       const descHasUniqueInfo = cleanedDesc && cleanedDesc !== cleanedLong
-        && !isStaleLongNameVariant(cleanedDesc, cleanedLong);
+        && !isStaleLongNameVariant(cleanedDesc, cleanedLong, routeStopNames);
 
       if (descHasUniqueInfo) {
         // cleaned desc has info not in long_name.
