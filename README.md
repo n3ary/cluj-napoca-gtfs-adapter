@@ -150,6 +150,21 @@ repo variable to enable the GTFS-RT trip-ID parity check
 (`scripts/smoke-rt-parity.js`). See
 [`.github/workflows/daily.yml`](./.github/workflows/daily.yml).
 
+## Contributing
+
+`main` is protected — every change goes through a PR. See
+[docs/standards/version-management.md](docs/standards/version-management.md)
+for the bump-on-PR rule. PRs trigger
+[`.github/workflows/pr-validation.yml`](.github/workflows/pr-validation.yml),
+which bumps `package.json#version` on the PR branch and runs validate +
+test + reconcile:dry. The daily workflow (above) handles publish.
+
+Branch protection on `main`:
+- PR required, 0 approvals (solo-dev friendly)
+- Linear history (squash/rebase only)
+- No force-push, no branch deletion
+- **Require branches to be up to date** (so the version sequencing can't race)
+
 ### CI smoke tests
 
 | Step | What it does | Fails the build when |
