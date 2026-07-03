@@ -110,6 +110,6 @@ jobs:
       - name: Smoke-test the published URL (next day)
         if: github.event_name == 'workflow_dispatch'
         run: |
-          URL="https://raw.githubusercontent.com/ciotlosm/cluj-napoca-gtfs-adapter/binaries/cluj-napoca.gtfs.zip"
+          URL="https://raw.githubusercontent.com/n3ary/cluj-napoca-gtfs-adapter/binaries/cluj-napoca.gtfs.zip"
           echo "Validating $URL"
           curl -sI "$URL" | head -5
