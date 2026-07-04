@@ -5,7 +5,7 @@
 
 The version in `package.json` is bumped on every PR via a bot commit on the PR branch. When the PR merges to `main`, `main` already has the new version. Other open PRs rebase onto `main` to pick up the new version (or get auto-rebased by Dependabot).
 
-Cross-ref: [../specs/ci-and-versioning.md](../specs/ci-and-versioning.md) for the implementation walkthrough (this standard is the rule; that spec is how it's wired up).
+Cross-ref: [specs/ci-and-versioning.md](../specs/ci-and-versioning.md) for the implementation walkthrough (this standard is the rule; that spec is how it's wired up).
 
 ## Rules
 
