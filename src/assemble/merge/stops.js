@@ -1,3 +1,5 @@
+import { StopRowSchema } from '@n3ary/gtfs-spec/spec';
+
 /**
  * Stops reconciliation.
  *
@@ -100,11 +102,11 @@ function formatCoord(n) {
 }
 
 export function stopsToTxt(stops) {
-  const headers = [
-    'stop_id', 'stop_code', 'stop_name', 'stop_desc',
-    'stop_lat', 'stop_lon', 'zone_id', 'stop_url',
-    'location_type', 'parent_station', 'stop_timezone', 'wheelchair_boarding',
-  ];
+  // Use the canonical stops.txt column list from the shared spec.
+  // Object.keys(StopsRowSchema.shape) gives the spec-defined columns
+  // in reference order. .passthrough() means the schema accepts
+  // extras; this list does not, which is correct for the output zip.
+  const headers = Object.keys(StopRowSchema.shape);
   const lines = [headers.join(',')];
   for (const s of stops) {
     lines.push([

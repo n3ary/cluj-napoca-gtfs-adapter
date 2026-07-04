@@ -1,3 +1,5 @@
+import { TripRowSchema } from '@n3ary/gtfs-spec/spec';
+
 /**
  * Trips + stop_times reconciliation.
  *
@@ -852,7 +854,7 @@ function formatGtfsTime(seconds) {
 }
 
 export function tripsToTxt(tripRows) {
-  const headers = ['route_id', 'service_id', 'trip_id', 'trip_headsign', 'trip_short_name', 'direction_id', 'block_id', 'shape_id', 'wheelchair_accessible', 'bikes_allowed'];
+  const headers = Object.keys(TripRowSchema.shape);
   const lines = [headers.join(',')];
   for (const t of tripRows) {
     lines.push([

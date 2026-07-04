@@ -51,7 +51,7 @@ async function main() {
   const re = env.TRIP_ID_HHMM_RE ? new RegExp(env.TRIP_ID_HHMM_RE) : HHMM_RE;
 
   if (!existsSync(zipPath)) {
-    console.error(`[trip-ids] FATAL: ${zipPath} not found. Run 'npm run build' first.`);
+    console.error(`[trip-ids] FATAL: ${zipPath} not found. Run 'pnpm run build' first.`);
     exit(2);
   }
   console.log(`[trip-ids] inspecting ${zipPath} (${(statSync(zipPath).size / 1024).toFixed(1)} KB)`);

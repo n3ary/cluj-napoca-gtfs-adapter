@@ -10,7 +10,7 @@
   },
   "scripts": {
     "build": "node src/cli.js build",
-    "build:full": "npm run fetch:csv && npm run build",
+    "build:full": "pnpm fetch:csv && pnpm build",
     "validate": "node src/cli.js validate",
     "reconcile:dry": "node src/cli.js reconcile --dry-run",
     "fetch:csv": "node scripts/fetch-stage.js",
@@ -22,9 +22,12 @@
     "lint:fix": "eslint src/ tests/ --fix"
   },
   "engines": {
-    "node": ">=24"
+    "node": ">=24",
+    "pnpm": ">=11"
   },
+  "packageManager": "pnpm@11.5.2",
   "dependencies": {
+    "@n3ary/gtfs-spec": "^0.3.1",
     "archiver": "^8.0.0"
   },
   "devDependencies": {

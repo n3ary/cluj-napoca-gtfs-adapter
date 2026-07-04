@@ -1,3 +1,5 @@
+import { DAY_KEY_COLS } from '@n3ary/gtfs-spec/spec';
+
 /**
  * Calendar reconciliation.
  *
@@ -75,9 +77,13 @@ function addDays(d, n) {
 }
 
 export function calendarToTxt(rows) {
+  // DAY_KEY_COLS (monday..sunday) plus service_id + start_date + end_date
+  // matches the canonical calendar.txt shape from the shared spec.
   const headers = [
-    'service_id', 'monday', 'tuesday', 'wednesday', 'thursday',
-    'friday', 'saturday', 'sunday', 'start_date', 'end_date',
+    'service_id',
+    ...DAY_KEY_COLS,
+    'start_date',
+    'end_date',
   ];
   const lines = [headers.join(',')];
   for (const r of rows) {

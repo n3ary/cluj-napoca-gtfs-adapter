@@ -43,5 +43,5 @@ math, schedule matching). Avoid for I/O-heavy or stateful code.
 
 ## CI
 
-`npm run check && npm test && npm run build` is what PR validation runs.
+`pnpm run check && pnpm test && pnpm run build` is what PR validation runs.
 Local equivalent must pass before push.

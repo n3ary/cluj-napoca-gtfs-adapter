@@ -1,3 +1,5 @@
+import { RouteRowSchema } from '@n3ary/gtfs-spec/spec';
+
 /**
  * Routes reconciliation.
  *
@@ -23,7 +25,6 @@
  * See `docs/assemble-rules.md` for the priority table.
  */
 
-import { parseCsv } from '../../lib/csv.js';
 import { info } from '../../lib/log-severity.js';
 import { canonicalShortName } from '../../sources/ctp-csv/shortname-aliases.js';
 
@@ -588,10 +589,10 @@ export function reconcileRoutes({ seed, tranzy, warnings }) {
  * @returns {string}
  */
 export function routesToTxt(routes) {
-  const headers = [
-    'route_id', 'agency_id', 'route_short_name', 'route_long_name',
-    'route_desc', 'route_type', 'route_url', 'route_color', 'route_text_color',
-  ];
+  // Canonical routes.txt columns from the shared spec. Same rationale
+  // as stopsToTxt: Object.keys gives the spec-defined columns in
+  // reference order; .passthrough() doesn't add to the list.
+  const headers = Object.keys(RouteRowSchema.shape);
   const lines = [headers.join(',')];
   for (const r of routes) {
     lines.push([
@@ -617,5 +618,3 @@ function csvField(v) {
   }
   return s;
 }
-
-export { parseCsv };

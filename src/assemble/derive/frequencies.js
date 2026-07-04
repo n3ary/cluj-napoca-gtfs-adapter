@@ -241,6 +241,9 @@ function findRouteByShortName(routesByRouteId, shortName) {
 
 export function frequenciesToTxt(rows) {
   if (rows.length === 0) return '';
+  // Canonical frequencies.txt columns per the GTFS reference. The
+  // @n3ary/gtfs-spec package doesn't yet model frequencies.txt; if it
+  // ever does, swap this for Object.keys(FrequenciesRowSchema.shape).
   const headers = ['trip_id', 'start_time', 'end_time', 'headway_secs', 'exact_times'];
   const lines = [headers.join(',')];
   for (const r of rows) {

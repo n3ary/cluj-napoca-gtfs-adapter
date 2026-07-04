@@ -198,8 +198,8 @@ Trip-id format changed in v0.2: dropped the `seq` segment.
 Run the self-check locally after building:
 
 ```bash
-npm run build
-npm run smoke:trip-ids
+pnpm run build
+pnpm run smoke:trip-ids
 ```
 
 In CI, the step runs after `build` (so `output/cluj-napoca.gtfs.zip`
