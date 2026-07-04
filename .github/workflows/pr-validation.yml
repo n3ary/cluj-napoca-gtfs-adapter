@@ -35,12 +35,12 @@ jobs:
         # ERR_PNPM_BAD_PM_VERSION in pnpm action v6.x.
 
       - name: Install dependencies
-        # The @n3ary/gtfs-spec dep is a private in-org package; the
-        # workflow writes the auth token to a per-run ~/.npmrc at
-        # install time. Same pattern as the n3ary/app and n3ary/gtfs
-        # workflows.
+        # @n3ary/gtfs-spec is published to GitHub Packages as a public
+        # package (publishConfig.access: public). The auto-provided
+        # GITHUB_TOKEN has read access to public packages in the same
+        # org, so no separate NPM_TOKEN secret is needed.
         env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           pnpm config set //npm.pkg.github.com/:_authToken "$NPM_TOKEN"
           # pnpm 11 verifies the lockfile's tarball URLs against the
