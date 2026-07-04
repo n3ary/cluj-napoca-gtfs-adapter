@@ -177,3 +177,6 @@ Branch protection on `main`:
 
 MIT — see [LICENSE](./LICENSE). Schedule data © CTP Cluj-Napoca;
 this software is a personal transit data tool, not affiliated with CTP.
+## License
+
+[PolyForm Noncommercial License 1.0.0](./LICENSE) — free for individuals, hobbyists, education, research, and charitable organizations. Any commercial use (paid products, paid services, or hosted services for revenue) needs a separate license from the author. See the LICENSE file for the full terms.
