@@ -1,4 +1,4 @@
-<!-- synced from n3ary/standards@ef77e9b on 2026-07-04 -->
+<!-- synced from n3ary/standards@2a7b208 on 2026-07-04 -->
 <!-- do not edit locally; run scripts/vendor-standards.mjs to update -->
 
 # Testing
@@ -43,5 +43,5 @@ math, schedule matching). Avoid for I/O-heavy or stateful code.
 
 ## CI
 
-`pnpm run check && pnpm test && pnpm run build` is what PR validation runs.
+`npm run check && npm test && npm run build` is what PR validation runs.
 Local equivalent must pass before push.
