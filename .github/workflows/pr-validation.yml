@@ -30,8 +30,9 @@ jobs:
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v6.0.9
-        with:
-          version: 11
+        # version omitted — pnpm-action-setup reads the exact version
+        # from package.json#packageManager. Specifying both caused
+        # ERR_PNPM_BAD_PM_VERSION in pnpm action v6.x.
 
       - name: Install dependencies
         # The @n3ary/gtfs-spec dep is a private in-org package; the
