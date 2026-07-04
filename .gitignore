@@ -8,3 +8,5 @@ coverage/
 dist/
 *.tmp
 .build-input/
+# CI deploy bundle (Cloudflare Pages) — never committed
+deploy/
