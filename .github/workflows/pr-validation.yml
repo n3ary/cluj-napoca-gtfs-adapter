@@ -43,6 +43,12 @@ jobs:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           pnpm config set //npm.pkg.github.com/:_authToken "$NPM_TOKEN"
+          # pnpm 11 verifies the lockfile's tarball URLs against the
+          # registry. A freshly-published @n3ary/gtfs-spec can fail
+          # with ERR_PNPM_TARBALL_URL_MISMATCH if the lockfile was
+          # generated before the publish settled. Clean the lockfile
+          # and let pnpm re-resolve with current registry data.
+          pnpm clean --lockfile
           pnpm install --no-frozen-lockfile
 
       - name: Auto-bump version to main + 1
