@@ -234,8 +234,8 @@ GitHub Actions cron at `30 0 * * *` UTC (after Transitous's daily ~00:00
 UTC import). Two-phase pipeline:
 
 1. Checkout this repo.
-2. Setup Node 24, `npm ci`.
-3. **Stage 1** — `npm run fetch:csv` (fetches all CSVs from CTP, populates
+2. Setup Node 24, `pnpm install`.
+3. **Stage 1** — `pnpm fetch:csv` (fetches all CSVs from CTP, populates
    `.build-input/`). Fails loud on infra misses (WAF / HTTP 5xx / network).
 4. **Stage 2** — `node src/cli.js build` (reads CSVs from `.build-input/`,
    assembles the GTFS feed, writes the zip). Never fetches upstream.
