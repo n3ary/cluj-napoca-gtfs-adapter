@@ -4,18 +4,20 @@
   "private": false,
   "type": "module",
   "description": "Reconciled GTFS Schedule publisher for Cluj-Napoca (CTP) — combines Transitous seed, Tranzy.ai live static API, and CTP CSV timetables into the most complete, error-free feed.",
-  "main": "src/cli.js",
+  "main": "src/cli.ts",
   "bin": {
-    "cluj-napoca-gtfs": "src/cli.js"
+    "cluj-napoca-gtfs": "src/cli.ts"
   },
   "scripts": {
-    "build": "node src/cli.js build",
-    "build:full": "pnpm fetch:csv && pnpm build",
-    "validate": "node src/cli.js validate",
-    "reconcile:dry": "node src/cli.js reconcile --dry-run",
-    "fetch:csv": "node scripts/fetch-stage.js",
-    "inspect:404s": "node scripts/inspect-404s.js",
-    "smoke:trip-ids": "node src/verify-rt-parity.js",
+    "build": "tsc -p tsconfig.json --noEmit",
+    "check": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
+    "build:run": "tsx src/cli.ts build",
+    "build:full": "pnpm fetch:csv && pnpm build:run",
+    "validate": "tsx src/cli.ts validate",
+    "reconcile:dry": "tsx src/cli.ts reconcile --dry-run",
+    "fetch:csv": "tsx scripts/fetch-stage.ts",
+    "inspect:404s": "tsx scripts/inspect-404s.ts",
+    "smoke:trip-ids": "tsx src/verify-rt-parity.ts",
     "test": "vitest --run",
     "test:watch": "vitest",
     "lint": "eslint src/ tests/",
@@ -31,7 +33,10 @@
     "archiver": "^8.0.0"
   },
   "devDependencies": {
+    "@types/node": "^22.10.0",
     "eslint": "^10.6.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0",
     "vitest": "4.1.9"
   },
   "keywords": [
