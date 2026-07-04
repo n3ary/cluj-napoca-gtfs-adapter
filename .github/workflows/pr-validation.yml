@@ -35,12 +35,16 @@ jobs:
         # ERR_PNPM_BAD_PM_VERSION in pnpm action v6.x.
 
       - name: Install dependencies
-        # @n3ary/gtfs-spec is published to GitHub Packages as a public
-        # package (publishConfig.access: public). The auto-provided
-        # GITHUB_TOKEN has read access to public packages in the same
-        # org, so no separate NPM_TOKEN secret is needed.
+        # @n3ary/gtfs-spec is private on GitHub Packages (org-private,
+        # not org-public). The auto-provided GITHUB_TOKEN has no
+        # packages:read here, so a separate NPM_TOKEN is required.
+        # Owner: create a fine-grained PAT with
+        #   Resource: n3ary/gtfs-spec, Role: Read
+        # at https://github.com/settings/personal-access-tokens/new and
+        # replace the current NPM_TOKEN secret (which is temporarily
+        # set to the local `gh auth token` as a stopgap for this PR).
         env:
-          NPM_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           pnpm config set //npm.pkg.github.com/:_authToken "$NPM_TOKEN"
           # pnpm 11 verifies the lockfile's tarball URLs against the
