@@ -1,6 +1,6 @@
 {
   "name": "cluj-napoca-gtfs-adapter",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "private": false,
   "type": "module",
   "description": "Reconciled GTFS Schedule publisher for Cluj-Napoca (CTP) — combines Transitous seed, Tranzy.ai live static API, and CTP CSV timetables into the most complete, error-free feed.",
